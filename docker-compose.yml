@@ -1,0 +1,36 @@
+services:
+  siem_backend:
+    build: .
+    container_name: siem_backend
+    env_file:
+      - .env
+    environment:
+      # Bug real (2026-07-16): dentro del contenedor, el 127.0.0.1 del .env
+      # es el propio contenedor, no el host donde escucha Ollama — "Explicar
+      # con IA" y el chat devolvían 500 en producción por esto. Docker
+      # Desktop resuelve host.docker.internal al host (verificado: alcanza el
+      # 11434 de Ollama aunque este solo escuche en 127.0.0.1). `environment:`
+      # pisa a `env_file:`, así que el .env sigue valiendo tal cual para
+      # ejecutar uvicorn directamente en el host.
+      LOCAL_LLM_URL: http://host.docker.internal:11434/v1
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+    volumes:
+      - .:/app
+
+  # Túnel Cloudflare propio de SIAM (independiente del "tunel de Cleo" de
+  # GWS, cuyo ciclo de vida ya tumbó SIAM una vez — ver nota en
+  # GWS/docker-compose.yml). Solo arranca con el perfil "tunnel":
+  #   docker compose --profile tunnel up -d
+  # Requiere SIAM_TUNNEL_TOKEN en .env (token del túnel "siam" creado en
+  # Cloudflare Zero Trust). La ruta publicada en el dashboard debe apuntar a
+  # http://siem_backend:8001 (nombre de servicio, red interna de compose).
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: siam_tunnel
+    profiles: ["tunnel"]
+    command: tunnel run --token ${SIAM_TUNNEL_TOKEN}
+    restart: unless-stopped
+    depends_on:
+      - siem_backend

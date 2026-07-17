@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SIEM Security — SOC</title>
+<!--
+  Página autocontenida (React + Babel vía CDN, sin build) para poder ver los
+  cuatro paneles del MVP sin montar un proyecto Next.js/Vite. Los .jsx en
+  src/components/ siguen siendo el código "de verdad" para cuando exista una
+  app React real; esto es el harness mínimo para verlos funcionar ya.
+  Se sirve desde el propio backend (GET /dashboard) para que el fetch sea
+  same-origin y no dependa de la configuración de CORS.
+-->
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.25.6/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chart.js/4.4.4/chart.umd.min.js"
+        onerror="(function(){var s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js';document.head.appendChild(s);})();"></script>
+<style>body { margin: 0; }</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef } = React;
+
+const SEVERITY_STYLE = {
+  critica: 'bg-rose-950 border-rose-500 text-rose-300',
+  alta: 'bg-rose-900/40 border-rose-700 text-rose-300',
+  media: 'bg-amber-900/30 border-amber-700 text-amber-300',
+  baja: 'bg-slate-800 border-slate-700 text-slate-300',
+  info: 'bg-slate-800 border-slate-700 text-slate-400',
+};
+const STATUS_LABEL = { abierto: 'Abierto', en_investigacion: 'En investigación', resuelto: 'Resuelto' };
+
+// El backend guarda datetime.utcnow() NAIVE (sin 'Z' ni offset): new Date()
+// sobre ese string lo interpreta como hora LOCAL y todo salía desplazado
+// (+2h en Madrid en verano). Se añade la 'Z' solo si el string no trae ya
+// información de zona.
+function parseUtc(iso) {
+  if (!iso) return null;
+  return new Date(/Z|[+-]\d\d:?\d\d$/.test(iso) ? iso : iso + 'Z');
+}
+function fmtDateTime(iso) {
+  const d = parseUtc(iso);
+  return d ? d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+}
+function fmtDuration(ms) {
+  if (ms == null || isNaN(ms)) return '—';
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24);
+  if (d > 0) return `${d}d ${h % 24}h`;
+  if (h > 0) return `${h}h ${m % 60}m`;
+  if (m > 0) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+const ROLES = [
+  { value: 'direccion', label: 'Dirección' },
+  { value: 'it_responsable', label: 'Responsable IT' },
+  { value: 'analista', label: 'Analista' },
+  { value: 'auditor', label: 'Auditor' },
+  { value: 'admin', label: 'Administrador' },
+  { value: 'superadmin', label: 'Superadministrador' },
+];
+
+function riskColor(score) {
+  if (score >= 60) return 'text-rose-400';
+  if (score >= 30) return 'text-amber-400';
+  return 'text-emerald-400';
+}
+
+// ---------------------------------------------------------------------------
+// Serie temporal de ataques: hora / día / mes / año. "Tiempo real" ya está
+// cubierto por la tarjeta de eventos del último minuto en MonitoringPanel,
+// que se refresca sola cada 4s — no hace falta un websocket para esto.
+// ---------------------------------------------------------------------------
+function TimeseriesChart() {
+  const [granularity, setGranularity] = useState('day');
+  const [buckets, setBuckets] = useState([]);
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch(`/v1/monitoring/timeseries?granularity=${granularity}`);
+        if (res.ok && !cancelled) {
+          const data = await res.json();
+          setBuckets(data.buckets);
+        }
+      } catch (err) { console.error(err); }
+    }
+    load();
+    const id = setInterval(load, 10000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [granularity]);
+
+  useEffect(() => {
+    if (!canvasRef.current || buckets.length === 0) return;
+    // Bug real (2026-07-03): chart.js se carga desde un CDN externo
+    // (cdnjs) que a veces responde 503. Si `Chart` no existe, esto tiraba
+    // un ReferenceError sin capturar dentro de un efecto -- sin error
+    // boundary, React desmontaba TODO el árbol y dejaba la página en
+    // blanco, no solo este gráfico. Se degrada en vez de reventar.
+    if (typeof Chart === 'undefined') return;
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(canvasRef.current, {
+      type: 'bar',
+      data: {
+        labels: buckets.map((b) => b.periodo),
+        datasets: [
+          { label: 'Eventos', data: buckets.map((b) => b.eventos), backgroundColor: 'rgba(59,130,246,0.6)', borderRadius: 4 },
+          { label: 'Críticos', data: buckets.map((b) => b.criticos), backgroundColor: 'rgba(244,63,94,0.85)', borderRadius: 4 },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#cbd5e1' } } },
+        scales: {
+          x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+          y: { ticks: { color: '#94a3b8', precision: 0 }, grid: { color: '#1e293b' }, beginAtZero: true },
+        },
+      },
+    });
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+  }, [buckets]);
+
+  const LABELS = { hour: 'Por hora', day: 'Por día', month: 'Por mes', year: 'Por año' };
+
+  return (
+    <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h2 className="text-lg font-semibold">📈 Ataques a lo largo del tiempo</h2>
+        <div className="flex gap-1">
+          {Object.entries(LABELS).map(([g, label]) => (
+            <button key={g} onClick={() => setGranularity(g)}
+              className={`text-xs px-2 py-1 rounded border ${granularity === g ? 'bg-blue-600 border-blue-500' : 'border-slate-700 hover:bg-slate-800'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      {typeof Chart === 'undefined' ? (
+        <p className="text-amber-400 italic text-sm">No se pudo cargar Chart.js (CDN externo no disponible). Los datos siguen accesibles en <code className="text-slate-400">/v1/monitoring/timeseries</code>.</p>
+      ) : buckets.length === 0 ? (
+        <p className="text-slate-500 italic text-sm">Todavía no hay suficientes eventos para graficar — genera alguno abajo.</p>
+      ) : (
+        <div style={{ height: '260px' }}>
+          <canvas ref={canvasRef}></canvas>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Monitorización (módulo 1) — usa /v1/monitoring/overview, no /v1/metrics
+// (ese es el de tickets Jira, sigue existiendo aparte en "/")
+// ---------------------------------------------------------------------------
+function MonitoringPanel() {
+  const [overview, setOverview] = useState(null);
+  const [creating, setCreating] = useState(false);
+
+  async function load() {
+    try {
+      const res = await fetch('/v1/monitoring/overview');
+      if (res.ok) setOverview(await res.json());
+    } catch (err) { console.error(err); }
+  }
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 4000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function crearEventoDemo(severity) {
+    setCreating(true);
+    try {
+      await fetch('/v1/monitoring/ingest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          source: 'demo',
+          asset_name: 'web-prod-01',
+          event_type: 'demo',
+          severity,
+          summary: severity === 'critica' ? 'Ransomware detectado (demo)' : 'Evento de prueba',
+        }),
+      });
+      await load();
+    } finally { setCreating(false); }
+  }
+
+  if (!overview) return <div className="text-slate-500 italic p-6">Cargando...</div>;
+
+  return (
+    <div>
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">Riesgo global</h3>
+          <p className={`text-3xl font-extrabold mt-2 ${riskColor(overview.riesgo_global)}`}>{overview.riesgo_global}/100</p>
+        </div>
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">Activos monitorizados</h3>
+          <p className="text-3xl font-extrabold mt-2 text-blue-400">{overview.activos_monitorizados}</p>
+        </div>
+        <div className={`p-4 rounded-xl border shadow-lg ${overview.alertas_abiertas > 0 ? 'bg-rose-950 border-rose-500 animate-pulse' : 'bg-slate-900 border-slate-800'}`}>
+          <h3 className="text-slate-400 text-sm font-medium">Alertas abiertas</h3>
+          <p className="text-3xl font-extrabold mt-2">{overview.alertas_abiertas}</p>
+        </div>
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">Eventos totales</h3>
+          <p className="text-3xl font-extrabold mt-2 text-emerald-400">{overview.kpis.eventos_totales}</p>
+        </div>
+        <div className={`p-4 rounded-xl border shadow-lg ${overview.eventos_ultimo_minuto > 0 ? 'bg-amber-950 border-amber-600' : 'bg-slate-900 border-slate-800'}`}>
+          <h3 className="text-slate-400 text-sm font-medium flex items-center gap-1">
+            <span className={`inline-block w-2 h-2 rounded-full ${overview.eventos_ultimo_minuto > 0 ? 'bg-amber-400 animate-pulse' : 'bg-slate-600'}`}></span>
+            Tiempo real (último min.)
+          </h3>
+          <p className="text-3xl font-extrabold mt-2 text-amber-400">{overview.eventos_ultimo_minuto}</p>
+        </div>
+      </div>
+
+      <TimeseriesChart />
+
+      <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
+        <h2 className="text-lg font-semibold mb-3">Generar evento de prueba</h2>
+        <p className="text-xs text-slate-500 mb-3">Crea un evento sobre el activo "web-prod-01" para ver la correlación en Incidentes.</p>
+        <div className="flex flex-wrap gap-2">
+          {['baja', 'media', 'alta', 'critica'].map((s) => (
+            <button key={s} disabled={creating} onClick={() => crearEventoDemo(s)}
+              className={`text-xs px-3 py-2 rounded border font-semibold disabled:opacity-50 ${SEVERITY_STYLE[s]}`}>
+              + Evento {s}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+        <h2 className="text-lg font-semibold mb-3">Eventos recientes</h2>
+        {overview.eventos_recientes.length === 0 ? (
+          <p className="text-slate-500 italic text-sm">Sin eventos todavía.</p>
+        ) : (
+          <div className="space-y-1 font-mono text-xs max-h-64 overflow-y-auto">
+            {overview.eventos_recientes.map((e) => (
+              <div key={e.id} className="border-b border-slate-900 pb-1 flex justify-between">
+                <span>{e.summary} <span className="text-slate-500">({e.asset_name || e.asset_id || 's/activo'})</span></span>
+                <span className={`px-1.5 rounded ${SEVERITY_STYLE[e.severity] || ''}`}>{e.severity}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Incidentes (módulos 3 y 4)
+// ---------------------------------------------------------------------------
+function IncidentsPanel() {
+  const [incidents, setIncidents] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [explaining, setExplaining] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
+  async function loadIncidents() {
+    try {
+      const res = await fetch('/v1/incidents');
+      if (res.ok) setIncidents(await res.json());
+    } catch (err) { console.error(err); } finally { setLoading(false); }
+  }
+
+  useEffect(() => {
+    loadIncidents();
+    const id = setInterval(loadIncidents, 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function updateStatus(id, status) {
+    const res = await fetch(`/v1/incidents/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }),
+    });
+    // Sin esto, el panel de detalle se quedaba con el estado viejo hasta
+    // re-seleccionar el incidente (y el botón de eliminar no aparecía nunca
+    // justo después de marcarlo resuelto). El spread conserva los campos
+    // solo-de-cliente (lastExplanation, aiProvider).
+    if (res.ok) {
+      const updated = await res.json();
+      setSelected((prev) => (prev && prev.id === id ? { ...prev, ...updated } : prev));
+    }
+    await loadIncidents();
+  }
+
+  async function explain(id) {
+    setExplaining(true);
+    try {
+      const res = await fetch(`/v1/incidents/${id}/explain`, { method: 'POST' });
+      // Un 500 pelado no es JSON: res.json() lanzaba, y como no había catch
+      // el usuario no veía absolutamente nada (bug real en producción,
+      // 2026-07-16). Ahora cualquier fallo acaba en explainError, visible.
+      let data = null;
+      try { data = await res.json(); } catch (e) { /* respuesta no-JSON */ }
+      if (res.ok && data) {
+        setSelected((prev) => (prev && prev.id === id ? { ...prev, lastExplanation: data.explicacion, aiProvider: data.proveedor_ia, explainError: null } : prev));
+      } else {
+        const detail = (data && data.detail) || `El servidor devolvió HTTP ${res.status}.`;
+        setSelected((prev) => (prev && prev.id === id ? { ...prev, explainError: detail } : prev));
+      }
+    } catch (err) {
+      setSelected((prev) => (prev && prev.id === id ? { ...prev, explainError: 'No se pudo contactar con el servidor: ' + err.message } : prev));
+    } finally { setExplaining(false); }
+  }
+
+  async function removeIncident(id) {
+    if (!window.confirm('¿Eliminar definitivamente este incidente resuelto? Esta acción no se puede deshacer.')) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/v1/incidents/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setSelected(null);
+        await loadIncidents();
+      } else {
+        let data = null;
+        try { data = await res.json(); } catch (e) { /* respuesta no-JSON */ }
+        window.alert((data && data.detail) || `No se pudo eliminar el incidente (HTTP ${res.status}).`);
+      }
+    } finally { setDeleting(false); }
+  }
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="lg:col-span-2 bg-slate-900 rounded-xl border border-slate-800 shadow-lg overflow-hidden">
+        {/* En móvil la tabla de 5 columnas se desplaza en horizontal en vez de aplastarse */}
+        <div className="overflow-x-auto">
+        <div className="min-w-[560px]">
+        <div className="grid grid-cols-5 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 px-4 py-2">
+          <div className="col-span-2">Incidente</div><div>Severidad</div><div>Estado</div><div>Riesgo</div>
+        </div>
+        {loading ? (
+          <div className="p-4 text-slate-500 italic">Cargando...</div>
+        ) : incidents.length === 0 ? (
+          <div className="p-4 text-slate-500 italic">Sin incidentes todavía — genera un evento en Monitorización.</div>
+        ) : (
+          incidents.map((inc) => (
+            <button key={inc.id} onClick={() => setSelected(inc)}
+              className={`w-full text-left grid grid-cols-5 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-800/60 ${selected && selected.id === inc.id ? 'bg-slate-800/80' : ''}`}>
+              <div className="col-span-2 truncate">
+                <div className="font-semibold truncate">{inc.title}</div>
+                <div className="text-xs text-slate-500">{inc.id} · {fmtDateTime(inc.created_at)}</div>
+              </div>
+              <div><span className={`px-2 py-0.5 rounded text-[10px] border ${SEVERITY_STYLE[inc.severity] || SEVERITY_STYLE.info}`}>{inc.severity}</span></div>
+              <div className="text-xs text-slate-400">
+                {STATUS_LABEL[inc.status] || inc.status}
+                {inc.resolved_at && (
+                  <div className="text-[10px] text-emerald-500">⏱ {fmtDuration(parseUtc(inc.resolved_at) - parseUtc(inc.created_at))}</div>
+                )}
+              </div>
+              <div className="text-xs font-mono">{inc.risk_score}/100</div>
+            </button>
+          ))
+        )}
+        </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-4">
+        {!selected ? (
+          <p className="text-slate-500 italic text-sm">Selecciona un incidente para ver el detalle.</p>
+        ) : (
+          <div className="space-y-4">
+            <div><h2 className="text-lg font-semibold">{selected.title}</h2><p className="text-xs text-slate-500">{selected.id}</p></div>
+            <p className="text-sm text-slate-300">{selected.description}</p>
+            <div className="text-xs text-slate-400 space-y-0.5 border-t border-b border-slate-800 py-2">
+              <div>📅 Creado: <span className="text-slate-300">{fmtDateTime(selected.created_at)}</span></div>
+              {selected.resolved_at && (
+                <div>✅ Resuelto: <span className="text-slate-300">{fmtDateTime(selected.resolved_at)}</span></div>
+              )}
+              {selected.resolved_at && (
+                <div>⏱️ Tiempo de resolución: <span className="text-emerald-400 font-semibold">{fmtDuration(parseUtc(selected.resolved_at) - parseUtc(selected.created_at))}</span></div>
+              )}
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-slate-500 mb-1">Activos afectados</h3>
+              <div className="flex flex-wrap gap-1">
+                {(selected.affected_assets || []).map((a) => (
+                  <span key={a} className="text-[10px] bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5">{a}</span>
+                ))}
+              </div>
+            </div>
+            <div>
+              <h3 className="text-xs font-bold text-slate-500 mb-1">Línea temporal</h3>
+              <div className="space-y-1 max-h-40 overflow-y-auto font-mono text-xs">
+                {(selected.timeline || []).map((t, idx) => (
+                  <div key={idx} className="border-b border-slate-900 pb-1">
+                    <span className="text-slate-500">{parseUtc(t.timestamp).toLocaleTimeString()}</span> <span className="text-blue-400">[{t.actor}]</span> {t.description}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {['abierto', 'en_investigacion', 'resuelto'].map((s) => (
+                <button key={s} onClick={() => updateStatus(selected.id, s)}
+                  className={`text-xs px-2 py-1 rounded border ${selected.status === s ? 'bg-blue-600 border-blue-500' : 'border-slate-700 hover:bg-slate-800'}`}>
+                  {STATUS_LABEL[s]}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => explain(selected.id)} disabled={explaining}
+              className="w-full text-xs bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 rounded px-3 py-2 font-semibold">
+              {explaining ? 'Consultando IA...' : '🤖 Explicar con IA'}
+            </button>
+            {selected.explainError && (
+              <div className="bg-rose-950/60 border border-rose-800 rounded p-3 text-xs text-rose-300 whitespace-pre-line">
+                ⚠️ {selected.explainError}
+              </div>
+            )}
+            {selected.lastExplanation && (
+              <div className="bg-slate-950 border border-slate-800 rounded p-3 text-xs whitespace-pre-line">
+                <div className="text-slate-500 mb-1">Proveedor: {selected.aiProvider}</div>{selected.lastExplanation}
+              </div>
+            )}
+            {/* Siempre visible (deshabilitado si no está resuelto): oculto del
+                todo nadie descubría que la opción existía. */}
+            <button onClick={() => removeIncident(selected.id)} disabled={deleting || selected.status !== 'resuelto'}
+              title={selected.status !== 'resuelto' ? 'Marca el incidente como Resuelto para poder eliminarlo' : 'Eliminar definitivamente este incidente'}
+              className="w-full text-xs bg-rose-800 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed rounded px-3 py-2 font-semibold">
+              {deleting ? 'Eliminando...' : '🗑️ Eliminar incidente'}
+            </button>
+            {selected.status !== 'resuelto' && (
+              <p className="text-[10px] text-slate-500 text-center -mt-2">Solo se pueden eliminar incidentes resueltos.</p>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Chat de IA (módulo 9)
+// ---------------------------------------------------------------------------
+function AIChatPanel() {
+  const [role, setRole] = useState('analista');
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
+  const [provider, setProvider] = useState(null);
+
+  async function send() {
+    if (!input.trim() || sending) return;
+    const userMessage = { role: 'user', content: input };
+    const history = messages;
+    setMessages((prev) => [...prev, userMessage]);
+    setInput('');
+    setSending(true);
+    try {
+      const res = await fetch('/v1/ai/chat', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMessage.content, user_role: role, history }),
+      });
+      const data = await res.json();
+      setProvider(data.proveedor_ia);
+      setMessages((prev) => [...prev, { role: 'assistant', content: data.respuesta }]);
+    } catch (err) {
+      setMessages((prev) => [...prev, { role: 'assistant', content: 'Error al contactar con el motor de IA.' }]);
+    } finally { setSending(false); }
+  }
+
+  return (
+    <div className="flex flex-col h-[70vh]">
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-sm text-slate-400">{provider ? `Proveedor activo: ${provider}` : 'El nivel de detalle se adapta al rol seleccionado'}</p>
+        <select value={role} onChange={(e) => setRole(e.target.value)} className="bg-slate-900 border border-slate-700 rounded px-2 py-1 text-sm">
+          {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+        </select>
+      </div>
+      <div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl p-4 overflow-y-auto space-y-3 mb-4">
+        {messages.length === 0 && <p className="text-slate-500 italic text-sm">Prueba: "¿qué significa esta alerta?", "¿qué prioridad tiene?", "¿cómo reducir este riesgo?"</p>}
+        {messages.map((m, idx) => (
+          <div key={idx} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-[75%] rounded-lg px-3 py-2 text-sm whitespace-pre-line ${m.role === 'user' ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-200'}`}>{m.content}</div>
+          </div>
+        ))}
+        {sending && <div className="text-slate-500 text-xs italic">Pensando...</div>}
+      </div>
+      <div className="flex gap-2">
+        <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && send()}
+          placeholder="Escribe tu pregunta..." className="flex-1 bg-slate-900 border border-slate-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-blue-500" />
+        <button onClick={send} disabled={sending} className="bg-blue-600 hover:bg-blue-500 disabled:opacity-50 px-4 py-2 rounded text-sm font-semibold">Enviar</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Panel ejecutivo (módulo 8)
+// ---------------------------------------------------------------------------
+function ExecutivePanel() {
+  const [panel, setPanel] = useState(null);
+
+  useEffect(() => {
+    async function load() {
+      const res = await fetch('/v1/reports/executive');
+      if (res.ok) setPanel(await res.json());
+    }
+    load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  if (!panel) return <div className="text-slate-500 italic p-6">Cargando...</div>;
+
+  return (
+    <div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">Nivel de riesgo</h3>
+          <p className={`text-5xl font-extrabold mt-2 ${riskColor(panel.nivel_riesgo)}`}>{panel.nivel_riesgo}</p>
+        </div>
+        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">Incidentes abiertos</h3>
+          <p className="text-4xl font-extrabold mt-2 text-blue-400">{panel.incidentes_abiertos}</p>
+        </div>
+        <div className={`p-5 rounded-xl border shadow-lg ${panel.incidentes_criticos_abiertos > 0 ? 'bg-rose-950 border-rose-600 animate-pulse' : 'bg-slate-900 border-slate-800'}`}>
+          <h3 className="text-slate-400 text-sm font-medium">Críticos sin resolver</h3>
+          <p className="text-4xl font-extrabold mt-2">{panel.incidentes_criticos_abiertos}</p>
+        </div>
+      </div>
+      <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
+        <h2 className="text-lg font-semibold mb-2">Resumen</h2>
+        <p className="text-slate-300 text-sm">{panel.resumen}</p>
+      </div>
+      <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+        <h2 className="text-lg font-semibold mb-3">Principales amenazas</h2>
+        {panel.principales_amenazas.length === 0 ? (
+          <p className="text-slate-500 italic text-sm">Ninguna amenaza crítica activa.</p>
+        ) : (
+          <ul className="space-y-2">
+            {panel.principales_amenazas.map((t, idx) => (
+              <li key={idx} className="flex justify-between text-sm border-b border-slate-900 pb-2">
+                <span>{t.titulo}</span><span className="text-rose-400 font-bold uppercase text-xs">{t.severidad}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Simulador de crisis: practicar sobre el mismo motor de correlación que un
+// incidente real, con delays de verdad entre eventos (siam/scenarios.py +
+// siam/simulator.py). Lo que genera esto no es un mock: son eventos e
+// incidentes reales en el mismo siam.db, visibles también en Incidentes.
+// ---------------------------------------------------------------------------
+function SimulatorPanel() {
+  const [scenarios, setScenarios] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [run, setRun] = useState(null);
+  const [launching, setLaunching] = useState(false);
+  const pollRef = useRef(null);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch('/v1/monitoring/scenarios');
+        if (res.ok) {
+          const data = await res.json();
+          setScenarios(data);
+          if (data.length > 0) setSelected(data[0].id);
+        }
+      } catch (err) { console.error(err); }
+    }
+    load();
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
+
+  async function launch() {
+    if (!selected || launching || (run && run.status === 'en_curso')) return;
+    setLaunching(true);
+    setRun(null);
+    try {
+      const res = await fetch(`/v1/monitoring/simulate/${selected}`, { method: 'POST' });
+      if (!res.ok) throw new Error('No se pudo lanzar el escenario');
+      const data = await res.json();
+      setRun(data);
+      if (pollRef.current) clearInterval(pollRef.current);
+      pollRef.current = setInterval(async () => {
+        const statusRes = await fetch(`/v1/monitoring/simulate/${data.run_id}/status`);
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          setRun(statusData);
+          if (statusData.status !== 'en_curso') clearInterval(pollRef.current);
+        }
+      }, 1500);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLaunching(false);
+    }
+  }
+
+  const enCurso = run && run.status === 'en_curso';
+
+  return (
+    <div>
+      <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
+        <h2 className="text-lg font-semibold mb-1">🧪 Simulador de crisis</h2>
+        <p className="text-xs text-slate-500 mb-4">
+          Practica sobre el mismo motor de correlación que un incidente real: los eventos e
+          incidentes que genera esto se guardan igual que cualquier otro, con delays reales entre pasos.
+        </p>
+        {scenarios.length === 0 ? (
+          <p className="text-slate-500 italic text-sm">Cargando escenarios...</p>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
+            {scenarios.map((s) => (
+              <button key={s.id} disabled={enCurso} onClick={() => setSelected(s.id)}
+                className={`text-left p-3 rounded-lg border transition disabled:opacity-50 ${selected === s.id ? 'bg-blue-950 border-blue-500' : 'bg-slate-950 border-slate-800 hover:border-slate-700'}`}>
+                <div className="font-semibold text-sm">{s.name}</div>
+                <div className="text-xs text-slate-500 mt-1">{s.description}</div>
+                <div className="text-[10px] text-slate-600 mt-2">{s.total_steps} pasos</div>
+              </button>
+            ))}
+          </div>
+        )}
+        <button onClick={launch} disabled={!selected || launching || enCurso}
+          className="bg-rose-700 hover:bg-rose-600 disabled:opacity-50 rounded px-4 py-2 text-sm font-semibold">
+          {enCurso ? '⏳ Escenario en curso...' : '▶️ Lanzar escenario'}
+        </button>
+      </div>
+
+      {run && (
+        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">{run.scenario_name}</h2>
+            <span className={`text-xs px-2 py-1 rounded border ${
+              run.status === 'completado' ? 'bg-emerald-950 border-emerald-600 text-emerald-300' :
+              run.status === 'error' ? 'bg-rose-950 border-rose-600 text-rose-300' :
+              'bg-amber-950 border-amber-600 text-amber-300 animate-pulse'
+            }`}>{run.status}</span>
+          </div>
+          <div className="w-full bg-slate-950 rounded-full h-2 mb-4 overflow-hidden">
+            <div className="bg-blue-600 h-2 transition-all" style={{ width: `${(run.completed_steps / run.total_steps) * 100}%` }}></div>
+          </div>
+          <p className="text-xs text-slate-500 mb-2">{run.completed_steps}/{run.total_steps} eventos inyectados</p>
+          <div className="space-y-1 font-mono text-xs max-h-64 overflow-y-auto">
+            {run.log.length === 0 ? (
+              <p className="text-slate-500 italic">Esperando el primer evento...</p>
+            ) : (
+              run.log.map((entry, idx) => (
+                <div key={idx} className="border-b border-slate-950 pb-1 flex justify-between">
+                  <span>
+                    <span className="text-slate-500">{new Date(entry.timestamp).toLocaleTimeString()}</span>{' '}
+                    {entry.summary || entry.error} <span className="text-slate-600">({entry.asset_name || 's/activo'})</span>
+                  </span>
+                  <span className={`px-1.5 rounded ${SEVERITY_STYLE[entry.severity] || ''}`}>{entry.severity || 'error'}</span>
+                </div>
+              ))
+            )}
+          </div>
+          {run.status === 'completado' && (
+            <p className="text-xs text-emerald-400 mt-3">✅ Escenario completado — revisa la pestaña Incidentes para ver la correlación en acción.</p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Campañas de concienciación: el vector de entrada más común en una pyme es
+// un empleado, no una vulnerabilidad de software. Genera contenido con el
+// motor de IA, lo envía por email (SMTP opcional en el backend, se degrada
+// con gracia si no está configurado), trackea clics/reportes de phishing
+// simulado, y el flujo que pidió José: el empleado confirma que ha leído el
+// contenido y el equipo de seguridad tiene que VALIDAR esa confirmación.
+// ---------------------------------------------------------------------------
+const CAMPAIGN_TOPICS = [
+  { value: 'phishing', label: 'Phishing' },
+  { value: 'contrasenas', label: 'Contraseñas' },
+  { value: 'ingenieria_social', label: 'Ingeniería social' },
+  { value: 'manejo_datos', label: 'Manejo de datos' },
+  { value: 'malware', label: 'Malware' },
+  { value: 'otro', label: 'Otro' },
+];
+const CAMPAIGN_CONTENT_TYPES = [
+  { value: 'email_phishing', label: 'Email de phishing simulado' },
+  { value: 'comunicado', label: 'Comunicado' },
+  { value: 'quiz', label: 'Quiz' },
+];
+const TARGET_STATUS_STYLE = {
+  pendiente: 'bg-slate-800 border-slate-700 text-slate-400',
+  enviado: 'bg-blue-950 border-blue-700 text-blue-300',
+  clic: 'bg-rose-950 border-rose-600 text-rose-300',
+  reportado: 'bg-emerald-950 border-emerald-600 text-emerald-300',
+  completado: 'bg-amber-950 border-amber-600 text-amber-300',
+  validado: 'bg-emerald-950 border-emerald-500 text-emerald-300',
+};
+
+function MetricCard({ label, value, danger, good }) {
+  return (
+    <div className={`p-3 rounded-xl border shadow-lg ${danger ? 'bg-rose-950 border-rose-700' : good ? 'bg-emerald-950 border-emerald-700' : 'bg-slate-900 border-slate-800'}`}>
+      <h3 className="text-slate-400 text-xs font-medium">{label}</h3>
+      <p className="text-lg font-bold mt-1">{value}</p>
+    </div>
+  );
+}
+
+function CampaignsPanel() {
+  const [view, setView] = useState('list');
+  const [campaigns, setCampaigns] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [metrics, setMetrics] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ name: '', topic: 'phishing', content_type: 'email_phishing', targetsText: '', starts_at: '' });
+  const [busy, setBusy] = useState(false);
+  const [sendResult, setSendResult] = useState(null);
+
+  async function loadCampaigns() {
+    const res = await fetch('/v1/campaigns');
+    if (res.ok) setCampaigns(await res.json());
+  }
+
+  useEffect(() => {
+    loadCampaigns();
+    const id = setInterval(loadCampaigns, 8000);
+    return () => clearInterval(id);
+  }, []);
+
+  async function loadMetrics(id) {
+    const res = await fetch(`/v1/campaigns/${id}/metrics`);
+    if (res.ok) setMetrics(await res.json());
+  }
+
+  async function selectCampaign(c) {
+    setSelected(c);
+    setSendResult(null);
+    await loadMetrics(c.id);
+  }
+
+  async function refreshSelected(id) {
+    const res = await fetch(`/v1/campaigns/${id}`);
+    if (res.ok) {
+      const data = await res.json();
+      setSelected(data);
+      await loadMetrics(data.id);
+    }
+    await loadCampaigns();
+  }
+
+  function parseTargets(text) {
+    return text.split('\n').map((line) => line.trim()).filter(Boolean).map((line) => {
+      const [name, email, department] = line.split(',').map((p) => (p || '').trim());
+      return { name: name || email || 'Sin nombre', email: email || null, department: department || null };
+    });
+  }
+
+  async function createCampaign() {
+    if (!form.name.trim()) return;
+    setBusy(true);
+    try {
+      const res = await fetch('/v1/campaigns', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: form.name,
+          topic: form.topic,
+          content_type: form.content_type,
+          targets: parseTargets(form.targetsText),
+          starts_at: form.starts_at ? new Date(form.starts_at).toISOString() : null,
+        }),
+      });
+      if (res.ok) {
+        setForm({ name: '', topic: 'phishing', content_type: 'email_phishing', targetsText: '', starts_at: '' });
+        setShowForm(false);
+        await loadCampaigns();
+      }
+    } finally { setBusy(false); }
+  }
+
+  async function generateContent() {
+    if (!selected) return;
+    setBusy(true);
+    try {
+      await fetch(`/v1/campaigns/${selected.id}/generate-content`, { method: 'POST' });
+      await refreshSelected(selected.id);
+    } finally { setBusy(false); }
+  }
+
+  async function sendCampaign() {
+    if (!selected) return;
+    setBusy(true);
+    setSendResult(null);
+    try {
+      const res = await fetch(`/v1/campaigns/${selected.id}/send`, { method: 'POST' });
+      const data = await res.json();
+      setSendResult(data);
+      await refreshSelected(selected.id);
+    } finally { setBusy(false); }
+  }
+
+  async function validateTarget(targetId) {
+    const validatedBy = window.prompt('¿Quién del equipo de seguridad valida esta lectura?');
+    if (!validatedBy) return;
+    await fetch(`/v1/campaigns/${selected.id}/targets/${targetId}/validate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ validated_by: validatedBy }),
+    });
+    await refreshSelected(selected.id);
+  }
+
+  async function deleteCampaign(campaign) {
+    const aviso = campaign.status === 'borrador'
+      ? `¿Borrar la campaña "${campaign.name}"? Esto no se puede deshacer.`
+      : `¿Borrar la campaña "${campaign.name}"? Ya está ${campaign.status} — se perderá su histórico de clics/reportes/validaciones, también de la Analítica cruzada. Esto no se puede deshacer.`;
+    if (!window.confirm(aviso)) return;
+    setBusy(true);
+    try {
+      await fetch(`/v1/campaigns/${campaign.id}`, { method: 'DELETE' });
+      if (selected && selected.id === campaign.id) {
+        setSelected(null);
+        setMetrics(null);
+      }
+      await loadCampaigns();
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-4">
+        <button onClick={() => setView('list')}
+          className={`text-sm px-3 py-1.5 rounded-lg border ${view === 'list' ? 'bg-blue-600 border-blue-500' : 'border-slate-700 hover:bg-slate-800'}`}>
+          🎓 Campañas
+        </button>
+        <button onClick={() => setView('analytics')}
+          className={`text-sm px-3 py-1.5 rounded-lg border ${view === 'analytics' ? 'bg-blue-600 border-blue-500' : 'border-slate-700 hover:bg-slate-800'}`}>
+          📊 Analítica cruzada
+        </button>
+      </div>
+
+      {view === 'analytics' ? <CampaignAnalytics /> : (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="lg:col-span-1 space-y-4">
+        <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-lg font-semibold">🎓 Campañas</h2>
+            <button onClick={() => setShowForm((v) => !v)} className="text-xs bg-blue-600 hover:bg-blue-500 rounded px-2 py-1 font-semibold">
+              {showForm ? 'Cancelar' : '+ Nueva'}
+            </button>
+          </div>
+
+          {showForm && (
+            <div className="space-y-2 mb-4 border-b border-slate-800 pb-4">
+              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })}
+                placeholder="Nombre de la campaña" className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm" />
+              <select value={form.topic} onChange={(e) => setForm({ ...form, topic: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                {CAMPAIGN_TOPICS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              <select value={form.content_type} onChange={(e) => setForm({ ...form, content_type: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+                {CAMPAIGN_CONTENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              <textarea value={form.targetsText} onChange={(e) => setForm({ ...form, targetsText: e.target.value })}
+                placeholder={'Destinatarios, uno por línea:\nAna Pérez, ana@empresa.com, Finanzas\nLuis Gómez, luis@empresa.com, IT'}
+                rows={4} className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-xs font-mono" />
+              <div>
+                <label className="text-[10px] text-slate-500 block mb-1">Fecha de lanzamiento (opcional, informativa — el envío sigue siendo manual)</label>
+                <input type="datetime-local" value={form.starts_at} onChange={(e) => setForm({ ...form, starts_at: e.target.value })}
+                  className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm" />
+              </div>
+              <button onClick={createCampaign} disabled={busy || !form.name.trim()}
+                className="w-full bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 rounded px-3 py-1.5 text-sm font-semibold">
+                Crear campaña
+              </button>
+            </div>
+          )}
+
+          {campaigns.length === 0 ? (
+            <p className="text-slate-500 italic text-sm">Sin campañas todavía.</p>
+          ) : (
+            <div className="space-y-1">
+              {campaigns.map((c) => (
+                <div key={c.id} onClick={() => selectCampaign(c)}
+                  className={`w-full text-left p-2 rounded border text-sm cursor-pointer group relative ${selected && selected.id === c.id ? 'bg-blue-950 border-blue-500' : 'border-slate-800 hover:bg-slate-800/60'}`}>
+                  <button onClick={(e) => { e.stopPropagation(); deleteCampaign(c); }} disabled={busy}
+                    title="Borrar campaña"
+                    className="absolute top-1.5 right-1.5 text-[10px] text-slate-600 hover:text-rose-400 disabled:opacity-30 opacity-0 group-hover:opacity-100 transition">
+                    🗑️
+                  </button>
+                  <div className="font-semibold truncate flex items-center gap-1 pr-5">
+                    {c.name}
+                    {c.status === 'borrador' && c.starts_at && new Date(c.starts_at) <= new Date() && (
+                      <span title="Lanzamiento vencido sin enviar">⚠️</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-slate-500 flex justify-between">
+                    <span>{c.topic} · {c.targets.length} destinatarios</span>
+                    <span className="uppercase">{c.status}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="lg:col-span-2 space-y-4">
+        {!selected ? (
+          <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-6">
+            <p className="text-slate-500 italic text-sm">Selecciona una campaña para ver el detalle, o crea una nueva.</p>
+          </div>
+        ) : (
+          <>
+            <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h2 className="text-lg font-semibold">{selected.name}</h2>
+                <span className="text-xs px-2 py-1 rounded border border-slate-700 uppercase">{selected.status}</span>
+              </div>
+              <p className="text-xs text-slate-500 mb-3">
+                Tema: {selected.topic} · Tipo: {selected.content_type} · {selected.targets.length} destinatarios
+                {selected.starts_at && <> · 📅 Lanzamiento previsto: {new Date(selected.starts_at).toLocaleString()}</>}
+              </p>
+
+              {selected.status === 'borrador' && selected.starts_at && new Date(selected.starts_at) <= new Date() && (
+                <div className="bg-amber-950/40 border border-amber-700 rounded p-2 text-xs text-amber-300 mb-3">
+                  ⚠️ La fecha de lanzamiento ya pasó y esta campaña sigue en borrador
+                  {selected.content ? ' — el envío automático la recogerá en el próximo ciclo del scheduler.' : ': falta generar el contenido con IA antes de que el envío automático pueda enviarla.'}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button onClick={generateContent} disabled={busy}
+                  className="text-xs bg-purple-700 hover:bg-purple-600 disabled:opacity-50 rounded px-3 py-1.5 font-semibold">
+                  🤖 Generar contenido con IA
+                </button>
+                <button onClick={sendCampaign} disabled={busy || !selected.content}
+                  className="text-xs bg-rose-700 hover:bg-rose-600 disabled:opacity-50 rounded px-3 py-1.5 font-semibold">
+                  ✉️ Enviar campaña
+                </button>
+                <button onClick={() => deleteCampaign(selected)} disabled={busy}
+                  className="text-xs bg-slate-800 hover:bg-rose-900 border border-slate-700 hover:border-rose-700 disabled:opacity-50 rounded px-3 py-1.5 font-semibold ml-auto">
+                  🗑️ Borrar
+                </button>
+              </div>
+
+              {selected.content ? (
+                <div className="bg-slate-950 border border-slate-800 rounded p-3 text-xs whitespace-pre-line max-h-48 overflow-y-auto">
+                  {selected.content}
+                </div>
+              ) : (
+                <p className="text-slate-500 italic text-sm">Sin contenido todavía — genera el contenido con IA antes de enviar.</p>
+              )}
+
+              {sendResult && (
+                <div className="mt-3 text-xs bg-slate-950 border border-slate-800 rounded p-2">
+                  <p>Enviados: <span className="text-emerald-400 font-semibold">{sendResult.enviados}</span> · Omitidos: <span className="text-amber-400 font-semibold">{sendResult.omitidos}</span></p>
+                  {sendResult.aviso && <p className="text-amber-400 mt-1">{sendResult.aviso}</p>}
+                </div>
+              )}
+            </div>
+
+            {metrics && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <MetricCard label="Enviados" value={metrics.enviados} />
+                <MetricCard label="Clics" value={`${metrics.clics} (${metrics.tasa_clic}%)`} danger={metrics.clics > 0} />
+                <MetricCard label="Reportados" value={`${metrics.reportados} (${metrics.tasa_reporte}%)`} good={metrics.reportados > 0} />
+                <MetricCard label="Completados" value={`${metrics.completados} (${metrics.tasa_completado}%)`} />
+                <MetricCard label="Validados" value={`${metrics.validados} (${metrics.tasa_validacion}%)`} good={metrics.validados > 0} />
+              </div>
+            )}
+
+            <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg overflow-hidden">
+              {/* Scroll horizontal en móvil para la tabla de destinatarios */}
+              <div className="overflow-x-auto">
+              <div className="min-w-[560px]">
+              <div className="grid grid-cols-5 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 px-4 py-2">
+                <div className="col-span-2">Destinatario</div><div>Departamento</div><div>Estado</div><div>Acción</div>
+              </div>
+              {selected.targets.length === 0 ? (
+                <div className="p-4 text-slate-500 italic text-sm">Sin destinatarios.</div>
+              ) : (
+                selected.targets.map((t) => (
+                  <div key={t.id} className="grid grid-cols-5 gap-2 px-4 py-2 border-b border-slate-900 text-sm items-center">
+                    <div className="col-span-2 truncate">
+                      <div className="truncate">{t.name}</div>
+                      <div className="text-xs text-slate-500 truncate">{t.email || 'sin email'}</div>
+                    </div>
+                    <div className="text-xs text-slate-400">{t.department || '—'}</div>
+                    <div><span className={`text-[10px] px-1.5 py-0.5 rounded border ${TARGET_STATUS_STYLE[t.status] || ''}`}>{t.status}</span></div>
+                    <div>
+                      {t.acknowledged_at && !t.validated_by_security ? (
+                        <button onClick={() => validateTarget(t.id)} className="text-[10px] bg-emerald-700 hover:bg-emerald-600 rounded px-2 py-1 font-semibold">
+                          Validar lectura
+                        </button>
+                      ) : t.validated_by_security ? (
+                        <span className="text-[10px] text-emerald-400">✓ {t.validated_by}</span>
+                      ) : (
+                        <span className="text-[10px] text-slate-600">—</span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+              </div>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Analítica cruzada entre campañas: quién repite haciendo clic (el
+// indicador de riesgo real), y si la tasa de clic mejora campaña a
+// campaña. Es el dato que un SOC de correlación de eventos genérico no
+// tiene -- el histórico por persona, no solo por incidente.
+// ---------------------------------------------------------------------------
+function CampaignAnalytics() {
+  const [data, setData] = useState(null);
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch('/v1/campaigns/analytics');
+        if (res.ok && !cancelled) setData(await res.json());
+      } catch (err) { console.error(err); }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!data || !canvasRef.current || data.tendencia.length === 0) return;
+    if (typeof Chart === 'undefined') return; // mismo guard que TimeseriesChart -- CDN externo puede fallar
+    if (chartRef.current) chartRef.current.destroy();
+    chartRef.current = new Chart(canvasRef.current, {
+      type: 'line',
+      data: {
+        labels: data.tendencia.map((t) => t.name),
+        datasets: [
+          { label: 'Tasa de clic %', data: data.tendencia.map((t) => t.tasa_clic), borderColor: 'rgba(244,63,94,0.9)', backgroundColor: 'rgba(244,63,94,0.2)', tension: 0.3 },
+          { label: 'Tasa de reporte %', data: data.tendencia.map((t) => t.tasa_reporte), borderColor: 'rgba(16,185,129,0.9)', backgroundColor: 'rgba(16,185,129,0.2)', tension: 0.3 },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#cbd5e1' } } },
+        scales: {
+          x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+          y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' }, beginAtZero: true, max: 100 },
+        },
+      },
+    });
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+  }, [data]);
+
+  if (!data) return <div className="text-slate-500 italic p-6">Cargando...</div>;
+
+  if (data.total_campanas === 0) {
+    return (
+      <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-6">
+        <p className="text-slate-500 italic text-sm">Todavía no hay campañas enviadas — la analítica cruzada aparece en cuanto haya al menos una campaña activa o finalizada.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+        <h2 className="text-lg font-semibold mb-3">📈 Tendencia entre campañas</h2>
+        {typeof Chart === 'undefined' ? (
+          <p className="text-amber-400 italic text-sm">No se pudo cargar Chart.js (CDN externo no disponible). Los datos siguen accesibles en <code className="text-slate-400">/v1/campaigns/analytics</code>.</p>
+        ) : (
+          <div style={{ height: '260px' }}><canvas ref={canvasRef}></canvas></div>
+        )}
+      </div>
+
+      <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-4">
+        <h2 className="text-lg font-semibold mb-3">🏢 Por departamento (acumulado)</h2>
+        <div className="grid grid-cols-3 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 pb-2 mb-2">
+          <div>Departamento</div><div>Destinatarios</div><div>Tasa de clic</div>
+        </div>
+        {Object.entries(data.por_departamento).map(([dep, stats]) => (
+          <div key={dep} className="grid grid-cols-3 gap-2 text-sm py-1.5 border-b border-slate-900">
+            <div className="capitalize">{dep.replace(/_/g, ' ')}</div>
+            <div>{stats.total_destinatarios}</div>
+            <div className={stats.tasa_clic > 30 ? 'text-rose-400 font-semibold' : ''}>{stats.tasa_clic}%</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-4">
+        <h2 className="text-lg font-semibold mb-1">⚠️ Reincidentes</h2>
+        <p className="text-xs text-slate-500 mb-3">Personas que han hecho clic en más de una campaña de phishing simulado — el indicador de riesgo más útil de todo esto.</p>
+        {data.reincidentes.length === 0 ? (
+          <p className="text-slate-500 italic text-sm">Nadie ha hecho clic todavía en más de una campaña. Buena señal.</p>
+        ) : (
+          <div className="space-y-1">
+            {data.reincidentes.map((p) => (
+              <div key={p.email} className="flex justify-between items-center text-sm border-b border-slate-900 py-1.5">
+                <div>
+                  <div className="font-semibold">{p.name}</div>
+                  <div className="text-xs text-slate-500">{p.email}</div>
+                </div>
+                <div className={`text-xs px-2 py-1 rounded border font-semibold ${p.clics > 1 ? 'bg-rose-950 border-rose-600 text-rose-300' : 'bg-amber-950 border-amber-700 text-amber-300'}`}>
+                  {p.clics}/{p.campanas_recibidas} clics
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Bug real (2026-07-03): un ReferenceError sin capturar en un useEffect
+// (chart.js cargado desde un CDN externo que devolvió 503) tumbaba TODO el
+// árbol de React y dejaba la página en blanco -- sin forma de saber por qué
+// ni de recuperarse sin recargar. Este boundary envuelve cada pestaña por
+// separado: si una falla, las demás siguen usables y se ve el error real.
+// ---------------------------------------------------------------------------
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('SIEM dashboard error:', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="bg-rose-950/40 border border-rose-800 rounded-xl p-6 text-sm">
+          <p className="font-semibold text-rose-300 mb-1">⚠️ Esta pestaña falló al cargar</p>
+          <p className="text-rose-400/80 font-mono text-xs mb-3">{String(this.state.error.message || this.state.error)}</p>
+          <button onClick={() => this.setState({ error: null })}
+            className="bg-rose-800 hover:bg-rose-700 rounded px-3 py-1.5 text-xs font-semibold">Reintentar</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const TABS = [
+  { id: 'monitoring', label: '🖥️ Monitorización', Component: MonitoringPanel },
+  { id: 'incidents', label: '🛡️ Incidentes', Component: IncidentsPanel },
+  { id: 'simulator', label: '🧪 Simulador', Component: SimulatorPanel },
+  { id: 'campaigns', label: '🎓 Campañas', Component: CampaignsPanel },
+  { id: 'chat', label: '💬 Chat IA', Component: AIChatPanel },
+  { id: 'executive', label: '📊 Ejecutivo', Component: ExecutivePanel },
+];
+
+function App() {
+  // La pestaña activa se refleja en la URL (#incidents, #chat...) para poder
+  // enlazar directamente a un panel y facilitar pruebas automatizadas.
+  const initialTab = window.location.hash.replace('#', '');
+  const [tab, setTab] = useState(TABS.some((t) => t.id === initialTab) ? initialTab : 'monitoring');
+  const selectTab = (id) => {
+    setTab(id);
+    try { history.replaceState(null, '', '#' + id); } catch (e) { /* noop */ }
+  };
+  const Active = TABS.find((t) => t.id === tab).Component;
+  return (
+    <div className="bg-slate-950 text-slate-100 min-h-screen font-sans">
+      <header className="border-b border-slate-800 px-4 sm:px-6 py-4 flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-xl font-bold">🛡️ SIEM Security — SOC virtual</h1>
+          <p className="text-xs text-slate-500">MVP</p>
+        </div>
+        <nav className="flex flex-wrap gap-2">
+          {TABS.map((t) => (
+            <button key={t.id} onClick={() => selectTab(t.id)}
+              className={`text-sm px-3 py-1.5 rounded-lg border whitespace-nowrap ${tab === t.id ? 'bg-blue-600 border-blue-500' : 'border-slate-700 hover:bg-slate-800'}`}>
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      </header>
+      <main className="p-4 sm:p-6">
+        <ErrorBoundary key={tab}>
+          <Active />
+        </ErrorBoundary>
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

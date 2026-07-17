@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+env/
+ENV/
+
+# Variables de entorno y secretos
+.env
+.env.local
+.env.*.local
+
+# Docker e IDEs
+.idea/
+.vscode/
+*.log
+
+# Datos y artefactos locales (estaban por error al final del .env, donde
+# rompían el parser de docker compose)
+videos/
+*.db
+.agents/
+
+# Skills instaladas desde GitHub: son dependencias, no fuente propia. Se
+# reinstalan a partir de skills-lock.json (ese sí se versiona), igual que
+# node_modules frente a package-lock.json.
+agent/skills/
