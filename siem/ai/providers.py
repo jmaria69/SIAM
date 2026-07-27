@@ -33,6 +33,18 @@ CAMPAIGN_SYSTEM_SUFFIX = (
     "realista para que sirva de prueba, pero usa siempre '[ENLACE_SIMULACRO]' "
     "como placeholder de enlace y no pidas ni incluyas credenciales reales."
 )
+# Narración de la kill-chain: el modelo recibe los pasos ATT&CK ya ordenados
+# de forma determinista (no los infiere él) y su única tarea es contarlos como
+# una historia que el dueño de una pyme entienda. Se le prohíbe inventar pasos
+# fuera de la lista para que el relato no se desvíe de la evidencia real.
+KILL_CHAIN_SYSTEM_SUFFIX = (
+    " Ahora te doy la cadena de ataque de un incidente YA reconstruida y ordenada "
+    "según MITRE ATT&CK. Nárrala como una historia breve y clara para alguien sin "
+    "conocimientos técnicos: qué pasó primero, cómo progresó y qué impacto tuvo o "
+    "pudo tener. No inventes pasos que no estén en la lista ni cambies su orden. "
+    "Termina con las 2-3 acciones de contención más urgentes, en imperativo. "
+    "Recuerda: solo recomiendas, no ejecutas nada."
+)
 CAMPAIGN_PROMPTS = {
     "email_phishing": (
         "Genera un email de phishing SIMULADO realista (asunto + cuerpo) sobre el tema "
@@ -157,6 +169,14 @@ class AnthropicProvider(AIProvider):
         prompt = f"Resume esta actividad para un informe titulado '{title}':\n" + "\n".join(data_points)
         return self._complete(system, prompt)
 
+    def narrate_kill_chain(self, incident, steps) -> str:
+        from siem.killchain import render_narrative_plain, render_steps_for_prompt
+
+        if not steps:  # nada que narrar: no gastes una llamada al modelo
+            return render_narrative_plain(incident, steps)
+        system = SYSTEM_PROMPT_TEMPLATE.format(role_hint="") + KILL_CHAIN_SYSTEM_SUFFIX
+        return self._complete(system, render_steps_for_prompt(incident, steps))
+
     def generate_campaign_content(self, topic: str, content_type: str, audience_hint: str = "") -> str:
         system = SYSTEM_PROMPT_TEMPLATE.format(role_hint="") + CAMPAIGN_SYSTEM_SUFFIX
         prompt = CAMPAIGN_PROMPTS.get(content_type, CAMPAIGN_PROMPTS["comunicado"]).format(
@@ -233,6 +253,14 @@ class OpenAIProvider(AIProvider):
         system = SYSTEM_PROMPT_TEMPLATE.format(role_hint="")
         prompt = f"Resume esta actividad para un informe titulado '{title}':\n" + "\n".join(data_points)
         return self._complete(system, prompt)
+
+    def narrate_kill_chain(self, incident, steps) -> str:
+        from siem.killchain import render_narrative_plain, render_steps_for_prompt
+
+        if not steps:  # nada que narrar: no gastes una llamada al modelo
+            return render_narrative_plain(incident, steps)
+        system = SYSTEM_PROMPT_TEMPLATE.format(role_hint="") + KILL_CHAIN_SYSTEM_SUFFIX
+        return self._complete(system, render_steps_for_prompt(incident, steps))
 
     def generate_campaign_content(self, topic: str, content_type: str, audience_hint: str = "") -> str:
         system = SYSTEM_PROMPT_TEMPLATE.format(role_hint="") + CAMPAIGN_SYSTEM_SUFFIX

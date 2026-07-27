@@ -6,9 +6,12 @@ hablan con `AIProvider`. Esto es lo que permite que José elija "local, Claude,
 OpenAI, cualquier LLM de pago" sin reescribir el resto del sistema.
 """
 from abc import ABC, abstractmethod
-from typing import List
+from typing import TYPE_CHECKING, List
 
 from siem.models import ChatMessage, Incident, Role
+
+if TYPE_CHECKING:  # solo para tipos; evita importar killchain en tiempo de ejecución
+    from siem.killchain import KillChainStep
 
 
 class AIProvider(ABC):
@@ -22,6 +25,19 @@ class AIProvider(ABC):
     @abstractmethod
     def explain_incident(self, incident: Incident) -> str:
         """Explica un incidente en lenguaje claro y recomienda mitigación."""
+
+    def narrate_kill_chain(self, incident: Incident, steps: "List[KillChainStep]") -> str:
+        """Narra en lenguaje llano la cadena de ataque ya reconstruida de
+        forma determinista (ver `siem/killchain.py`).
+
+        NO es abstracto a propósito: el default devuelve la narración de
+        plantilla determinista, así que un proveedor que no lo sobreescriba
+        (p.ej. RuleBasedProvider, sin IA) sigue dando una respuesta útil en
+        vez de fallar. Los proveedores LLM lo sobreescriben para generar un
+        relato real a partir de los mismos pasos."""
+        from siem.killchain import render_narrative_plain
+
+        return render_narrative_plain(incident, steps)
 
     @abstractmethod
     def summarize(self, title: str, data_points: List[str]) -> str:

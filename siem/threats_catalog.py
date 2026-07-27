@@ -31,6 +31,14 @@ class ThreatEntry(TypedDict):
     riesgo: str
     prevencion: str
     keywords: list[str]
+    # Campos MITRE ATT&CK — NO se escriben a mano en cada entrada del literal
+    # de abajo; se inyectan al cargar el módulo desde la tabla `MITRE_MAP`
+    # (ver más abajo). Se mantienen aquí en el TypedDict para que el tipo de
+    # una entrada ya enriquecida sea correcto y para documentar que existen.
+    mitre_tactic: str       # nombre legible de la táctica, p.ej. "Acceso inicial"
+    mitre_tactic_id: str    # id ATT&CK de la táctica, p.ej. "TA0001"
+    mitre_technique: str    # nombre de la técnica, p.ej. "Phishing"
+    mitre_technique_id: str # id de la técnica, p.ej. "T1566"
 
 
 THREATS_CATALOG: list[ThreatEntry] = [
@@ -282,6 +290,118 @@ THREATS_CATALOG: list[ThreatEntry] = [
     },
 ]
 
+# ===========================================================================
+# Mapa a MITRE ATT&CK — la "capa de vocabulario" que convierte una amenaza
+# suelta del catálogo en un paso de una cadena de ataque (kill-chain).
+#
+# Por qué una tabla aparte y no un campo más en cada dict de arriba:
+#   1. El literal de 30 entradas ya es grande; meter 4 campos ATT&CK en cada
+#      uno multiplica el ruido y el riesgo de erratas al editarlo.
+#   2. El mapeo amenaza -> táctica/técnica es EXACTAMENTE lo que un analista
+#      querrá auditar y discutir de un vistazo. Aquí está todo junto, en una
+#      sola tabla revisable, en la misma línea determinista que
+#      `threat_detection.py` (reglas visibles, no inferencia de IA).
+#   3. Se inyecta en cada entrada al cargar el módulo, así que a partir de
+#      `get_threat(id)` los campos ya vienen incluidos y transparentes.
+#
+# Cada amenaza se mapea a UNA táctica + técnica primaria (MVP). Una amenaza
+# real puede tocar varias tácticas, pero una principal basta para ordenar la
+# cadena y narrarla; ampliar a lista es un cambio local a esta tabla.
+#
+# Nomenclatura: tácticas/técnicas de MITRE ATT&CK Enterprise
+# (https://attack.mitre.org/). Las dos entradas de IA (27) usan un id de
+# MITRE ATLAS (AML.*) porque ATT&CK Enterprise no cubre aún prompt injection;
+# se etiqueta explícito para no mezclar marcos sin avisar.
+# ---------------------------------------------------------------------------
+
+# Orden canónico de la kill-chain de ATT&CK. Sirve para ordenar los pasos de
+# un incidente de "cómo empezó" a "qué impacto tuvo" al narrarlo.
+TACTIC_ORDER: dict[str, int] = {
+    "TA0043": 0,   # Reconnaissance / Reconocimiento
+    "TA0042": 1,   # Resource Development / Desarrollo de recursos
+    "TA0001": 2,   # Initial Access / Acceso inicial
+    "TA0002": 3,   # Execution / Ejecución
+    "TA0003": 4,   # Persistence / Persistencia
+    "TA0004": 5,   # Privilege Escalation / Escalada de privilegios
+    "TA0005": 6,   # Defense Evasion / Evasión de defensas
+    "TA0006": 7,   # Credential Access / Acceso a credenciales
+    "TA0007": 8,   # Discovery / Descubrimiento
+    "TA0008": 9,   # Lateral Movement / Movimiento lateral
+    "TA0009": 10,  # Collection / Recolección
+    "TA0011": 11,  # Command and Control / Mando y control
+    "TA0010": 12,  # Exfiltration / Exfiltración
+    "TA0040": 13,  # Impact / Impacto
+}
+
+# Nombre legible (en español) de cada táctica, para la narrativa y los paneles.
+TACTIC_NAME_ES: dict[str, str] = {
+    "TA0043": "Reconocimiento",
+    "TA0042": "Desarrollo de recursos",
+    "TA0001": "Acceso inicial",
+    "TA0002": "Ejecución",
+    "TA0003": "Persistencia",
+    "TA0004": "Escalada de privilegios",
+    "TA0005": "Evasión de defensas",
+    "TA0006": "Acceso a credenciales",
+    "TA0007": "Descubrimiento",
+    "TA0008": "Movimiento lateral",
+    "TA0009": "Recolección",
+    "TA0011": "Mando y control (C2)",
+    "TA0010": "Exfiltración",
+    "TA0040": "Impacto",
+}
+
+# threat_id -> (tactic_id, technique_id, technique_name)
+# El nombre de la táctica se resuelve por TACTIC_NAME_ES para no repetirlo.
+_MITRE_RAW: dict[int, tuple[str, str, str]] = {
+    1:  ("TA0040", "T1498",       "Denegación de servicio de red"),
+    2:  ("TA0009", "T1557",       "Adversario en el medio (AiTM)"),
+    3:  ("TA0001", "T1566",       "Phishing"),
+    4:  ("TA0001", "T1566",       "Phishing (whaling / directivos)"),
+    5:  ("TA0001", "T1566",       "Phishing dirigido (spearphishing)"),
+    6:  ("TA0040", "T1486",       "Datos cifrados para impacto"),
+    7:  ("TA0006", "T1110",       "Fuerza bruta / adivinación de credenciales"),
+    8:  ("TA0001", "T1190",       "Explotación de aplicación pública"),
+    9:  ("TA0001", "T1190",       "Explotación de aplicación pública"),
+    10: ("TA0006", "T1557",       "Adversario en el medio: suplantación DNS"),
+    11: ("TA0006", "T1539",       "Robo de cookie de sesión web"),
+    12: ("TA0006", "T1110",       "Fuerza bruta"),
+    13: ("TA0001", "T1190",       "Explotación de aplicación pública"),
+    14: ("TA0001", "T1078",       "Cuentas válidas (uso indebido interno)"),
+    15: ("TA0002", "T1204",       "Ejecución por el usuario (archivo malicioso)"),
+    16: ("TA0001", "T1189",       "Compromiso drive-by"),
+    17: ("TA0001", "T1190",       "Explotación de aplicación pública (XSS)"),
+    18: ("TA0006", "T1040",       "Rastreo de red (sniffing)"),
+    19: ("TA0005", "T1600",       "Debilitamiento del cifrado"),
+    20: ("TA0002", "T1204",       "Ejecución por el usuario"),
+    21: ("TA0001", "T1195",       "Compromiso de la cadena de suministro"),
+    22: ("TA0001", "T1566",       "Phishing (ingeniería social con IA / deepfake)"),
+    23: ("TA0001", "T1190",       "Explotación de aplicación pública (config. cloud)"),
+    24: ("TA0001", "T1190",       "Explotación de aplicación pública (API)"),
+    25: ("TA0006", "T1110.004",   "Relleno de credenciales"),
+    26: ("TA0040", "T1496",       "Secuestro de recursos"),
+    27: ("TA0001", "AML.T0051",   "Inyección de prompt (MITRE ATLAS)"),
+    28: ("TA0001", "T1566",       "Phishing (BEC / fraude de correo)"),
+    29: ("TA0006", "T1111",       "Interceptación de MFA (SIM swapping)"),
+    30: ("TA0040", "T1498",       "Denegación de servicio de red (botnet IoT)"),
+}
+
+# Inyecta los campos MITRE en cada entrada del catálogo. Si en algún momento
+# se añade una amenaza sin mapear en `_MITRE_RAW`, esto falla en carga (no en
+# silencio): preferimos un error explícito a un incidente sin táctica.
+for _t in THREATS_CATALOG:
+    _tid = _t["id"]
+    if _tid not in _MITRE_RAW:
+        raise RuntimeError(
+            f"Amenaza id={_tid} ('{_t['nombre']}') sin mapeo MITRE en _MITRE_RAW"
+        )
+    _tactic_id, _tech_id, _tech_name = _MITRE_RAW[_tid]
+    _t["mitre_tactic_id"] = _tactic_id
+    _t["mitre_tactic"] = TACTIC_NAME_ES[_tactic_id]
+    _t["mitre_technique_id"] = _tech_id
+    _t["mitre_technique"] = _tech_name
+
+
 THREATS_BY_ID: dict[int, ThreatEntry] = {t["id"]: t for t in THREATS_CATALOG}
 
 
@@ -291,3 +411,9 @@ def get_threat(threat_id: int) -> Optional[ThreatEntry]:
 
 def list_threats() -> list[ThreatEntry]:
     return THREATS_CATALOG
+
+
+def tactic_rank(tactic_id: str) -> int:
+    """Posición de una táctica en la kill-chain de ATT&CK. Las desconocidas
+    van al final (999) para que ordenar nunca reviente por un id inesperado."""
+    return TACTIC_ORDER.get(tactic_id, 999)
