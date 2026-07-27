@@ -46,6 +46,17 @@ function fmtDateTime(iso) {
   const d = parseUtc(iso);
   return d ? d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 }
+// Etiqueta de una barra del gráfico de serie temporal. El backend agrega por
+// hora en UTC y devuelve "AAAA-MM-DD HH:00" (naive). Sin convertir, un evento
+// de las 21:59 UTC salía rotulado "21:00" mientras el reloj del usuario en
+// Madrid marcaba 23:59 -> parecía que el gráfico estaba parado 2h atrás. Solo
+// se convierte la granularidad "hour": día/mes/año son fechas sin hora y
+// convertirlas por zona podría cruzar un límite de día sin motivo.
+function fmtBucketLabel(periodo, granularity) {
+  if (granularity !== 'hour') return periodo;
+  const d = parseUtc(periodo.replace(' ', 'T'));
+  return d ? d.toLocaleString('es-ES', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : periodo;
+}
 function fmtDuration(ms) {
   if (ms == null || isNaN(ms)) return '—';
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -109,7 +120,7 @@ function TimeseriesChart() {
     chartRef.current = new Chart(canvasRef.current, {
       type: 'bar',
       data: {
-        labels: buckets.map((b) => b.periodo),
+        labels: buckets.map((b) => fmtBucketLabel(b.periodo, granularity)),
         datasets: [
           { label: 'Eventos', data: buckets.map((b) => b.eventos), backgroundColor: 'rgba(59,130,246,0.6)', borderRadius: 4 },
           { label: 'Críticos', data: buckets.map((b) => b.criticos), backgroundColor: 'rgba(244,63,94,0.85)', borderRadius: 4 },
@@ -268,6 +279,7 @@ function IncidentsPanel() {
   const [loading, setLoading] = useState(true);
   const [explaining, setExplaining] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [killchaining, setKillchaining] = useState(false);
 
   async function loadIncidents() {
     try {
@@ -315,6 +327,26 @@ function IncidentsPanel() {
     } catch (err) {
       setSelected((prev) => (prev && prev.id === id ? { ...prev, explainError: 'No se pudo contactar con el servidor: ' + err.message } : prev));
     } finally { setExplaining(false); }
+  }
+
+  async function reconstructKillChain(id) {
+    setKillchaining(true);
+    try {
+      const res = await fetch(`/v1/incidents/${id}/kill-chain`, { method: 'POST' });
+      // Mismo blindaje que explain(): un 500/502 puede no ser JSON, así que
+      // se envuelve el parseo y cualquier fallo acaba en killError visible.
+      let data = null;
+      try { data = await res.json(); } catch (e) { /* respuesta no-JSON */ }
+      if (res.ok && data) {
+        setSelected((prev) => (prev && prev.id === id ? { ...prev, killChain: data.kill_chain, killNarrative: data.narrativa, aiProvider: data.proveedor_ia, killError: null } : prev));
+        await loadIncidents();  // el endpoint deja rastro en la línea temporal
+      } else {
+        const detail = (data && data.detail) || `El servidor devolvió HTTP ${res.status}.`;
+        setSelected((prev) => (prev && prev.id === id ? { ...prev, killError: detail } : prev));
+      }
+    } catch (err) {
+      setSelected((prev) => (prev && prev.id === id ? { ...prev, killError: 'No se pudo contactar con el servidor: ' + err.message } : prev));
+    } finally { setKillchaining(false); }
   }
 
   async function removeIncident(id) {
@@ -423,6 +455,50 @@ function IncidentsPanel() {
             {selected.lastExplanation && (
               <div className="bg-slate-950 border border-slate-800 rounded p-3 text-xs whitespace-pre-line">
                 <div className="text-slate-500 mb-1">Proveedor: {selected.aiProvider}</div>{selected.lastExplanation}
+              </div>
+            )}
+            {/* Kill-chain: el diferenciador. Reconstruye la cadena de ataque en
+                MITRE ATT&CK y la narra. La reconstrucción es determinista
+                (siempre da algo); la narrativa depende del proveedor de IA. */}
+            <button onClick={() => reconstructKillChain(selected.id)} disabled={killchaining}
+              className="w-full text-xs bg-violet-700 hover:bg-violet-600 disabled:opacity-50 rounded px-3 py-2 font-semibold">
+              {killchaining ? 'Reconstruyendo cadena...' : '🔗 Reconstruir kill-chain (ATT&CK)'}
+            </button>
+            {selected.killError && (
+              <div className="bg-rose-950/60 border border-rose-800 rounded p-3 text-xs text-rose-300 whitespace-pre-line">
+                ⚠️ {selected.killError}
+              </div>
+            )}
+            {selected.killChain && (
+              <div className="bg-slate-950 border border-violet-900/60 rounded p-3 space-y-3">
+                <div className="text-[11px] font-bold text-violet-300 uppercase tracking-wide">
+                  Cadena de ataque · {selected.killChain.length} paso{selected.killChain.length === 1 ? '' : 's'}
+                </div>
+                {selected.killChain.length === 0 ? (
+                  <p className="text-xs text-slate-500 italic">Sin técnicas ATT&CK mapeadas en los eventos de este incidente.</p>
+                ) : (
+                  <ol className="relative border-l border-violet-800/60 ml-2 space-y-3">
+                    {selected.killChain.map((step) => (
+                      <li key={step.order} className="ml-4">
+                        <span className="absolute -left-[9px] flex items-center justify-center w-4 h-4 rounded-full bg-violet-700 text-[9px] font-bold">{step.order}</span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] font-semibold text-violet-300">{step.tactic}</span>
+                          <span className="text-[9px] font-mono bg-slate-800 border border-slate-700 rounded px-1 py-0.5 text-slate-300">{step.technique_id}</span>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded border ${SEVERITY_STYLE[step.severity] || SEVERITY_STYLE.info}`}>{step.severity}</span>
+                        </div>
+                        <div className="text-xs text-slate-200">{step.technique}</div>
+                        <div className="text-[10px] text-slate-500 italic">
+                          «{step.event_summary}»{step.asset_name ? ` · ${step.asset_name}` : ''}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {selected.killNarrative && (
+                  <div className="border-t border-slate-800 pt-2 text-xs whitespace-pre-line text-slate-300">
+                    <div className="text-slate-500 mb-1">Relato · proveedor: {selected.aiProvider}</div>{selected.killNarrative}
+                  </div>
+                )}
               </div>
             )}
             {/* Siempre visible (deshabilitado si no está resuelto): oculto del

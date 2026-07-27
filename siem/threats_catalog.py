@@ -48,7 +48,13 @@ THREATS_CATALOG: list[ThreatEntry] = [
         "definicion": "Inundar un sistema con solicitudes falsas para agotar sus recursos y apagarlo. DoS usa una sola fuente; DDoS utiliza una red masiva de computadoras infectadas (bots).",
         "riesgo": "Interrumpir el servicio (no buscan acceder a datos, a menos que se use como distracción para otro ataque).",
         "prevencion": "Instalar cortafuegos que filtren tráfico falso y diseñar arquitecturas de red resilientes (ej. SD-WAN).",
-        "keywords": ["ddos", "dos ", "denegacion_servicio", "denegación de servicio", "saturacion", "saturación", "trafico_anomalo", "tráfico anómalo", "volumen de tráfico"],
+        # Nota (falso positivo real): el acrónimo suelto "dos " casaba dentro
+        # de palabras españolas comunes ("fallidos ", "todos ", "saludos "...)
+        # -> un evento de fuerza bruta ("intentos de login fallidos") disparaba
+        # DoS por error. Se sustituye por formas específicas del acrónimo
+        # ("ataque dos", "dos/ddos", "(dos)"); "ddos" y "denegacion_servicio"
+        # (que usa el simulador) siguen cubriendo los casos reales.
+        "keywords": ["ddos", "ataque dos", "dos/ddos", "(dos)", "denegacion_servicio", "denegación de servicio", "saturacion", "saturación", "trafico_anomalo", "tráfico anómalo", "volumen de tráfico"],
     },
     {
         "id": 2,

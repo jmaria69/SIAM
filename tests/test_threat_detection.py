@@ -46,6 +46,29 @@ def test_detect_threats_is_accent_insensitive():
     assert 30 in detect_threats(event)  # Botnets de IoT
 
 
+def test_brute_force_login_does_not_false_trigger_dos():
+    """Regresión (2026-07-27): la keyword suelta 'dos ' de la amenaza DoS
+    casaba dentro de 'fallidos ' -> un evento de fuerza bruta ('intentos de
+    login fallidos') disparaba DoS por error, metiendo un paso fantasma en la
+    kill-chain. Debe detectar SOLO fuerza bruta (12), nunca DoS (1)."""
+    event = Event(
+        source="test",
+        event_type="generico",
+        summary="fuerza bruta: multiples intentos de login fallidos contra el servidor",
+    )
+    ids = detect_threats(event)
+    assert 12 in ids   # fuerza bruta, sí
+    assert 1 not in ids  # DoS, NO (era el falso positivo)
+
+
+def test_real_dos_event_still_detected_after_keyword_tightening():
+    """La corrección del falso positivo no debe cegar la detección real de
+    DoS/DDoS: el vocabulario del simulador ('denegacion_servicio') y 'ddos'
+    siguen disparando la amenaza 1."""
+    assert 1 in detect_threats(Event(source="test", event_type="denegacion_servicio", summary="Saturación del servicio público"))
+    assert 1 in detect_threats(Event(source="test", event_type="generico", summary="Ataque DDoS masivo desde botnet"))
+
+
 def test_every_catalog_entry_has_at_least_one_keyword():
     for threat in THREATS_CATALOG:
         assert threat["keywords"], f"La amenaza {threat['id']} no tiene keywords"
