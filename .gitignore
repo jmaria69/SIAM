@@ -27,3 +27,9 @@ videos/
 # reinstalan a partir de skills-lock.json (ese sí se versiona), igual que
 # node_modules frente a package-lock.json.
 agent/skills/
+
+# Herramientas locales de desarrollo (Claude Code, Serena, graphify): no son
+# fuente del proyecto ni deben compartirse en el repo público.
+.claude/
+.serena/
+graphify-out/

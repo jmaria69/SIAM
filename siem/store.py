@@ -211,6 +211,20 @@ class SiemStore:
 
     # -- Events --------------------------------------------------------------
     def add_event(self, event: Event) -> Event:
+        # external_id (rayId CF / transaction id Coraza, ver waf.py) no tiene
+        # UNIQUE en la tabla -- el pull de Cloudflare cabalga ventanas de
+        # lookback solapadas a proposito (10 min de ventana con tick cada
+        # 5 min, ver config.py) y sin este check reinserta el mismo evento
+        # en cada tick solapado. Simulador/monitoring nunca fijan
+        # external_id, asi que no les afecta.
+        if event.external_id is not None:
+            existing = (
+                self.db.query(EventDB)
+                .filter(EventDB.external_id == event.external_id)
+                .first()
+            )
+            if existing is not None:
+                return _row_to_event(existing)
         self.db.add(_event_to_row(event))
         self.db.commit()
         return event

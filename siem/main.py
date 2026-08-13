@@ -10,6 +10,7 @@ from siem.metrics import metrics
 from siem.campaign_scheduler import run_scheduler_loop
 from siem.config import Settings, settings as default_settings
 from siem.database import Base, engine, run_light_migrations
+from siem.ingest.cloudflare_scheduler import run_cloudflare_pull_loop
 from siem.router.api import router as tickets_router
 from siem.router.ai import router as ai_router
 from siem.router.automation import router as automation_router
@@ -18,6 +19,7 @@ from siem.router.incidents import router as incidents_router
 from siem.router.monitoring import router as monitoring_router
 from siem.router.reports import router as reports_router
 from siem.router.threats import router as threats_router
+from siem.router.waf import router as waf_router
 
 
 @asynccontextmanager
@@ -49,8 +51,22 @@ async def lifespan(app: FastAPI):
     scheduler_task = asyncio.create_task(
         run_scheduler_loop(default_settings.CAMPAIGN_SCHEDULER_INTERVAL_SECONDS)
     )
+
+    # Pull periódico de Cloudflare WAF (capa cloud del WAAP híbrido). Mismo
+    # patrón que el scheduler de campañas: guardamos la referencia para que
+    # no la recoja el garbage collector, y la cancelamos limpiamente al
+    # apagar. Si CLOUDFLARE_API_TOKEN/ZONE_ID no están configurados, el
+    # loop igual arranca pero cada tick no hace nada (ver
+    # `run_cloudflare_pull_once`) -- así no hay que meter un if aquí y
+    # tampoco se rompe si el usuario decide activar la integración en
+    # caliente cambiando el .env y reiniciando.
+    cloudflare_pull_task = asyncio.create_task(
+        run_cloudflare_pull_loop(default_settings.CLOUDFLARE_PULL_INTERVAL_SECONDS)
+    )
+
     yield
     scheduler_task.cancel()
+    cloudflare_pull_task.cancel()
 
 
 def create_app(settings_: Settings | None = None) -> FastAPI:
@@ -140,6 +156,7 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     app.include_router(reports_router)  # /v1/reports/* (módulos 7 y 8)
     app.include_router(campaigns_router)  # /v1/campaigns/* (campañas de concienciación)
     app.include_router(threats_router)  # /v1/threats/* (catálogo de 30 amenazas + detección)
+    app.include_router(waf_router)  # /v1/ingest/waf (WAAP híbrido: Cloudflare + Coraza)
 
     return app
 

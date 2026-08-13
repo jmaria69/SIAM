@@ -294,6 +294,28 @@ THREATS_CATALOG: list[ThreatEntry] = [
         "prevencion": "Cambiar credenciales por defecto en todo dispositivo IoT, mantener firmware actualizado, y segmentar la red para que los dispositivos IoT no tengan acceso directo a sistemas críticos.",
         "keywords": ["botnet iot", "dispositivo iot comprometido", "credenciales por defecto", "firmware sin actualizar", "camara comprometida", "router comprometido"],
     },
+    # ---- WAAP (H1 híbrido: Cloudflare + Coraza on-prem) ----
+    # Añadidas 2026-08-01 al incorporar la ingesta WAF. No dupliqué SQLi/XSS/
+    # DDoS/credential stuffing porque ya estaban (ids 8, 17, 1, 25) y sus
+    # keywords casan con el vocabulario Cloudflare/OWASP CRS tal cual. Faltaba
+    # el reconocimiento activo (bots/scanners) — T1595 no estaba mapeado — y
+    # el path traversal / LFI, que un WAF lo señala aparte de un SQLi.
+    {
+        "id": 31,
+        "nombre": "Escaneo activo y bots maliciosos",
+        "definicion": "Sondeos automáticos de puertos, rutas o vulnerabilidades desde bots o herramientas de reconocimiento (nikto, sqlmap, nmap, scanners de vulnerabilidades) antes de un ataque real. Un WAAP los detecta por firma del cliente, patrones de URL probadas y volumen.",
+        "riesgo": "Fase previa a la explotación: si se ignora, el atacante mapea la superficie de ataque y vuelve con un exploit dirigido. También revela credenciales y endpoints ocultos que el sitio no debía exponer.",
+        "prevencion": "Bot Management en la capa cloud (Cloudflare Bot Fight Mode o similar), reglas de rate limiting por IP/ASN, y bloqueo de user-agents de herramientas conocidas en el WAAP on-prem.",
+        "keywords": ["scanning", "escaneo activo", "sqlmap", "nikto", "nmap", "bot malicioso", "reconocimiento", "vulnerability scanner", "bad bot", "crawler malicioso"],
+    },
+    {
+        "id": 32,
+        "nombre": "Path traversal / Inclusión de ficheros (LFI/RFI)",
+        "definicion": "Manipulación de rutas en peticiones HTTP con secuencias tipo `../../etc/passwd` o rutas absolutas para leer ficheros del servidor fuera del directorio permitido, o incluir código remoto en el flujo de la app.",
+        "riesgo": "Lectura de ficheros sensibles del servidor (configuración, claves, código fuente) sin necesidad de autenticación, y en RFI ejecución de código controlado por el atacante.",
+        "prevencion": "Validar y canonicalizar rutas en el servidor, deshabilitar `allow_url_include` en PHP, y habilitar las reglas OWASP CRS 930xxx (LFI) y 931xxx (RFI) en el WAAP.",
+        "keywords": ["path traversal", "directory traversal", "lfi", "local file inclusion", "rfi", "remote file inclusion", "../", "etc/passwd", "traversal"],
+    },
 ]
 
 # ===========================================================================
@@ -390,6 +412,8 @@ _MITRE_RAW: dict[int, tuple[str, str, str]] = {
     28: ("TA0001", "T1566",       "Phishing (BEC / fraude de correo)"),
     29: ("TA0006", "T1111",       "Interceptación de MFA (SIM swapping)"),
     30: ("TA0040", "T1498",       "Denegación de servicio de red (botnet IoT)"),
+    31: ("TA0007", "T1595",       "Escaneo activo (reconocimiento)"),
+    32: ("TA0001", "T1190",       "Explotación de aplicación pública (LFI/RFI)"),
 }
 
 # Inyecta los campos MITRE en cada entrada del catálogo. Si en algún momento

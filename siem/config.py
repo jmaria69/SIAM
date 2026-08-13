@@ -67,6 +67,19 @@ class Settings(BaseSettings):
     # revisa si hay campañas con starts_at vencido para enviarlas solas.
     CAMPAIGN_SCHEDULER_INTERVAL_SECONDS: int = 30
 
+    # WAAP híbrido -- capa cloud (Cloudflare).
+    # Si CLOUDFLARE_API_TOKEN o CLOUDFLARE_ZONE_ID están vacíos, el pull no
+    # arranca y no se traga excepciones en silencio -- el resto de SIAM
+    # sigue funcionando igual (misma filosofía que SMTP/Telegram: una
+    # integración opcional nunca debe tumbar el arranque).
+    CLOUDFLARE_API_TOKEN: Optional[str] = None
+    CLOUDFLARE_ZONE_ID: Optional[str] = None
+    CLOUDFLARE_PULL_INTERVAL_SECONDS: int = 300  # 5 min: cabe en el plan Free
+    # Cuántos minutos hacia atrás mirar en cada tick. Debe ser >= al intervalo
+    # de pull para no perder eventos si un tick se retrasa. 10 min con pull
+    # de 5 min da margen holgado y cursor-free (deduplicación por rayId).
+    CLOUDFLARE_LOOKBACK_MINUTES: int = 10
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
