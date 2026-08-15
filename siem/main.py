@@ -20,6 +20,7 @@ from siem.router.monitoring import router as monitoring_router
 from siem.router.reports import router as reports_router
 from siem.router.threats import router as threats_router
 from siem.router.waf import router as waf_router
+from siem.router.course_cybersecurity import router as pyme_router
 
 
 @asynccontextmanager
@@ -156,7 +157,8 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     app.include_router(reports_router)  # /v1/reports/* (módulos 7 y 8)
     app.include_router(campaigns_router)  # /v1/campaigns/* (campañas de concienciación)
     app.include_router(threats_router)  # /v1/threats/* (catálogo de 30 amenazas + detección)
-    app.include_router(waf_router)  # /v1/ingest/waf (WAAP híbrido: Cloudflare + Coraza)
+    app.include_router(waf_router)  # /v1/ingest/waf (WAAP hibrido: Cloudflare + Coraza)
+    app.include_router(pyme_router)  # /v1/pyme/* (Ciberseguridad PYME - PDFs del curso)
 
     return app
 

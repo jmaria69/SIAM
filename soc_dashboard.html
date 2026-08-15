@@ -1240,6 +1240,557 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+
+
+// ============================================================
+// PYME CYBERSECURITY PANEL — 18 Unidades Didacticas del Curso
+// ============================================================
+
+const ATTACK_VECTORS = [
+  { id: "sqli_waf",         label: "💉 Inyección SQL (SQLi)" },
+  { id: "ddos_syn_flood",   label: "💣 DDoS SYN Flood" },
+  { id: "phishing_spear",   label: "🎣 Spear Phishing" },
+  { id: "arp_poisoning",    label: "🕸️  ARP Poisoning / MitM" },
+  { id: "wpa3_byod",        label: "📱 BYOD / Wi-Fi Corporativa" },
+  { id: "iot_botnet",       label: "🤖 IoT Botnet DDoS" },
+  { id: "biometric_spoof",  label: "👁️  Suplantación Biométrica" },
+  { id: "ransomware_exfil", label: "🔒 Ransomware / Doble Extorsión" },
+  { id: "session_hijacking",label: "🍪 Secuestro de Sesión JWT" },
+];
+const DEFENSES = [
+  { id: "waf",          label: "🛡️ WAF" },
+  { id: "mfa",          label: "🔑 MFA" },
+  { id: "edr",          label: "🔬 EDR" },
+  { id: "vpn",          label: "🌐 VPN" },
+  { id: "ids_ips",      label: "👁 IDS/IPS" },
+  { id: "backup_321",   label: "💾 Backup 3-2-1" },
+  { id: "radius",       label: "📡 RADIUS/802.1X" },
+  { id: "segmentacion", label: "🧱 Segmentación VLAN" },
+];
+const RISK_COLORS = { CRITICO: "#f43f5e", ALTO: "#f97316", MEDIO: "#f59e0b", BAJO: "#10b981" };
+const MATURITY_COLORS = { emerald: "#10b981", amber: "#f59e0b", rose: "#f43f5e" };
+
+function PymeCard({ title, children }) {
+  return (
+    <div className="bg-slate-800 border border-slate-700 rounded-xl p-5 mb-6">
+      <h3 className="text-base font-semibold text-violet-300 mb-4 flex items-center gap-2">{title}</h3>
+      {children}
+    </div>
+  );
+}
+
+function LevelBadge({ label, color }) {
+  const bg = { rose: "bg-rose-900/60 text-rose-300 border-rose-600", orange: "bg-orange-900/60 text-orange-300 border-orange-600", amber: "bg-amber-900/60 text-amber-300 border-amber-600", emerald: "bg-emerald-900/60 text-emerald-300 border-emerald-600" };
+  return <span className={`text-xs font-bold px-3 py-1 rounded-full border ${bg[color] || bg.amber}`}>{label}</span>;
+}
+
+function PdsSection() {
+  const [form, setForm] = React.useState({ empresa_nombre: "Mi PYME S.L.", sector: "E-Commerce", num_empleados: 20, tiene_ecommerce: true, tiene_teletrabajo: true, usa_nube: true, usa_iot: false });
+  const [result, setResult] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const [activePolicy, setActivePolicy] = React.useState(null);
+
+  async function generate() {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch("/v1/pyme/pds/generate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setResult(await r.json());
+    } catch (e) {
+      setError("No se pudo generar el PDS. Inténtalo de nuevo.");
+    } finally { setLoading(false); }
+  }
+
+  const policyLabels = { recursos_humanos: "👥 RRHH", recursos_tecnologicos: "💻 Tecnología", recursos_organizativos: "🏛️ Organización", recursos_fisicos: "🔐 Seguridad Física" };
+  const pdcaColors = { "Plan (Planificar)": "border-blue-500", "Do (Hacer)": "border-emerald-500", "Check (Verificar)": "border-amber-500", "Act (Actuar)": "border-violet-500" };
+
+  return (
+    <PymeCard title="📋 Plan Director de Seguridad (PDS) — UD4 M2 / UD1 M1">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+        <div>
+          <label className="text-xs text-slate-400 block mb-1">Empresa</label>
+          <input className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" value={form.empresa_nombre} onChange={e => setForm(f => ({...f, empresa_nombre: e.target.value}))} />
+        </div>
+        <div>
+          <label className="text-xs text-slate-400 block mb-1">Sector</label>
+          <input className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" value={form.sector} onChange={e => setForm(f => ({...f, sector: e.target.value}))} />
+        </div>
+        <div>
+          <label className="text-xs text-slate-400 block mb-1">Nº empleados</label>
+          <input type="number" className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" value={form.num_empleados} onChange={e => setForm(f => ({...f, num_empleados: parseInt(e.target.value)}))} />
+        </div>
+        <div className="flex flex-col gap-2 justify-center">
+          {[["tiene_ecommerce","🛒 E-Commerce"],["tiene_teletrabajo","🏠 Teletrabajo"],["usa_nube","☁️ Nube"],["usa_iot","🤖 IoT/IIoT"]].map(([k,l]) => (
+            <label key={k} className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input type="checkbox" className="accent-violet-500" checked={form[k]} onChange={e => setForm(f => ({...f, [k]: e.target.checked}))} />
+              {l}
+            </label>
+          ))}
+        </div>
+      </div>
+      <button id="pds-generate-btn" onClick={generate} disabled={loading} className="px-5 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
+        {loading ? "Generando PDS..." : "✨ Generar Plan Director"}
+      </button>
+      {error && (
+        <div className="mt-4 bg-rose-900/30 border border-rose-600 rounded-lg p-3 text-sm text-rose-300">⚠️ {error}</div>
+      )}
+      {result && (
+        <div className="mt-6 space-y-4">
+          <div className="bg-slate-900/60 rounded-lg p-4 border border-violet-800">
+            <p className="text-xs text-slate-400 mb-1">Alcance</p>
+            <p className="text-sm text-slate-200">{result.alcance}</p>
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wide">Ciclo PDCA</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {Object.entries(result.fases_ciclo_pdca).map(([fase, desc]) => (
+                <div key={fase} className={`bg-slate-900/60 border-l-4 ${pdcaColors[fase] || "border-slate-600"} rounded p-3`}>
+                  <p className="text-xs font-bold text-white mb-1">{fase}</p>
+                  <p className="text-xs text-slate-400">{desc}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-slate-400 mb-2 uppercase tracking-wide">Políticas por Componente</p>
+            <div className="flex flex-wrap gap-2 mb-3">
+              {Object.keys(result.politicas_por_componente).map(k => (
+                <button key={k} onClick={() => setActivePolicy(activePolicy === k ? null : k)}
+                  className={`text-xs px-3 py-1.5 rounded-full border transition-colors ${activePolicy === k ? "bg-violet-700 border-violet-500 text-white" : "border-slate-600 text-slate-400 hover:bg-slate-700"}`}>
+                  {policyLabels[k]}
+                </button>
+              ))}
+            </div>
+            {activePolicy && (
+              <ul className="space-y-1.5">
+                {result.politicas_por_componente[activePolicy].map((item, i) => (
+                  <li key={i} className="flex items-start gap-2 text-sm text-slate-300">
+                    <span className="text-violet-400 mt-0.5 shrink-0">▸</span>{item}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {result.marcos_normativos.map(m => (
+              <span key={m} className="text-xs bg-blue-900/40 border border-blue-700 text-blue-300 px-2 py-1 rounded-full">{m}</span>
+            ))}
+          </div>
+        </div>
+      )}
+    </PymeCard>
+  );
+}
+
+function RiskMatrixSection() {
+  const [riskForm, setRiskForm] = React.useState({ activo_nombre: "Servidor Web E-Commerce", probabilidad: 4, impacto: 5, amenaza_tipo: "Ransomware", estrategia_deseada: "mitigar" });
+  const [riskResult, setRiskResult] = React.useState(null);
+  const [biaForm, setBiaForm] = React.useState({ servicio_critico: "Plataforma E-Commerce", impacto_financiero_hora: 1500, datos_sensibles: true });
+  const [biaResult, setBiaResult] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [riskError, setRiskError] = React.useState(null);
+  const [biaError, setBiaError] = React.useState(null);
+
+  async function assessRisk() {
+    setLoading(true);
+    setRiskError(null);
+    try {
+      const r = await fetch("/v1/pyme/risk-matrix/assess", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(riskForm) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setRiskResult(await r.json());
+    } catch (e) {
+      setRiskError("No se pudo calcular el riesgo. Inténtalo de nuevo.");
+    } finally { setLoading(false); }
+  }
+  async function assessBia() {
+    setLoading(true);
+    setBiaError(null);
+    try {
+      const r = await fetch("/v1/pyme/bia/assess", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(biaForm) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setBiaResult(await r.json());
+    } catch (e) {
+      setBiaError("No se pudo calcular el BIA. Inténtalo de nuevo.");
+    } finally { setLoading(false); }
+  }
+
+  function RiskHeatmap({ p, i }) {
+    return (
+      <div className="grid gap-0.5 mt-3" style={{gridTemplateColumns:"repeat(5,1fr)"}}>
+        {[5,4,3,2,1].map(row => [1,2,3,4,5].map(col => {
+          const v = row * col;
+          const isCurrent = row === parseInt(p) && col === parseInt(i);
+          const bg = v >= 16 ? "bg-rose-700" : v >= 10 ? "bg-orange-600" : v >= 5 ? "bg-amber-600" : "bg-emerald-700";
+          return <div key={`${row}-${col}`} className={`${bg} ${isCurrent ? "ring-2 ring-white scale-110" : ""} rounded-sm h-7 flex items-center justify-center transition-all`}><span className="text-xs font-bold text-white/90">{v}</span></div>;
+        }))}
+      </div>
+    );
+  }
+
+  return (
+    <PymeCard title="📐 Matriz de Riesgos (R = P × I) y BIA — UD5 M2 / UD2-UD3 M1">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div>
+          <p className="text-xs font-semibold text-slate-400 mb-3 uppercase tracking-wide">Análisis de Riesgo</p>
+          <div className="space-y-3">
+            <input className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" placeholder="Nombre del activo" value={riskForm.activo_nombre} onChange={e => setRiskForm(f => ({...f, activo_nombre: e.target.value}))} />
+            <input className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" placeholder="Tipo de amenaza" value={riskForm.amenaza_tipo} onChange={e => setRiskForm(f => ({...f, amenaza_tipo: e.target.value}))} />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Probabilidad: <span className="text-white font-bold">{riskForm.probabilidad}</span></label>
+                <input type="range" min="1" max="5" className="w-full accent-violet-500" value={riskForm.probabilidad} onChange={e => setRiskForm(f => ({...f, probabilidad: parseInt(e.target.value)}))} />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400 block mb-1">Impacto: <span className="text-white font-bold">{riskForm.impacto}</span></label>
+                <input type="range" min="1" max="5" className="w-full accent-rose-500" value={riskForm.impacto} onChange={e => setRiskForm(f => ({...f, impacto: parseInt(e.target.value)}))} />
+              </div>
+            </div>
+            <select className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" value={riskForm.estrategia_deseada} onChange={e => setRiskForm(f => ({...f, estrategia_deseada: e.target.value}))}>
+              <option value="mitigar">Mitigar</option>
+              <option value="transferir">Transferir</option>
+              <option value="evitar">Evitar</option>
+              <option value="aceptar">Aceptar</option>
+            </select>
+            <button id="risk-assess-btn" onClick={assessRisk} disabled={loading} className="w-full py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">Calcular Riesgo</button>
+          </div>
+          {riskError && (
+            <div className="mt-4 bg-rose-900/30 border border-rose-600 rounded-lg p-3 text-sm text-rose-300">⚠️ {riskError}</div>
+          )}
+          {riskResult && (
+            <div className="mt-4 space-y-3">
+              <div className="flex items-center justify-between bg-slate-900/60 rounded-lg p-3">
+                <span className="text-sm text-slate-300">Valor de Riesgo (R = P × I)</span>
+                <span className="text-3xl font-black" style={{color: RISK_COLORS[riskResult.nivel_riesgo]}}>{riskResult.valor_riesgo_total}</span>
+              </div>
+              <div className="flex items-center gap-2"><LevelBadge label={riskResult.nivel_riesgo} color={riskResult.color_badge} /><span className="text-xs text-slate-400">{riskResult.accion_recomendada}</span></div>
+              <div className="bg-slate-900/60 rounded-lg p-3 border-l-4 border-violet-500">
+                <p className="text-xs text-slate-400 mb-1">Estrategia: <span className="text-violet-300 font-semibold uppercase">{riskResult.estrategia_seleccionada}</span></p>
+                <p className="text-xs text-slate-300">{riskResult.explicacion_estrategia}</p>
+              </div>
+              <RiskHeatmap p={riskForm.probabilidad} i={riskForm.impacto} />
+            </div>
+          )}
+        </div>
+        <div>
+          <p className="text-xs font-semibold text-slate-400 mb-3 uppercase tracking-wide">Análisis BIA — RTO / RPO</p>
+          <div className="space-y-3">
+            <input className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" placeholder="Servicio crítico" value={biaForm.servicio_critico} onChange={e => setBiaForm(f => ({...f, servicio_critico: e.target.value}))} />
+            <div>
+              <label className="text-xs text-slate-400 block mb-1">Coste por hora de parada (€)</label>
+              <input type="number" className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" value={biaForm.impacto_financiero_hora} onChange={e => setBiaForm(f => ({...f, impacto_financiero_hora: parseFloat(e.target.value)}))} />
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input type="checkbox" className="accent-violet-500" checked={biaForm.datos_sensibles} onChange={e => setBiaForm(f => ({...f, datos_sensibles: e.target.checked}))} />
+              Contiene datos sensibles / personales (RGPD)
+            </label>
+            <button id="bia-assess-btn" onClick={assessBia} disabled={loading} className="w-full py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">Calcular BIA</button>
+          </div>
+          {biaError && (
+            <div className="mt-4 bg-rose-900/30 border border-rose-600 rounded-lg p-3 text-sm text-rose-300">⚠️ {biaError}</div>
+          )}
+          {biaResult && (
+            <div className="mt-4 space-y-2">
+              {Object.entries(biaResult.indicadores_continuidad).map(([k, v]) => {
+                const labels = { RTO_tiempo_maximo_tolerable_recuperacion: "🕐 RTO", RPO_perdida_maxima_tolerable_datos: "💾 RPO", MTTD_tiempo_promedio_deteccion: "🔍 MTTD", MTTR_tiempo_promedio_restauracion: "🔧 MTTR" };
+                return <div key={k} className="flex justify-between items-center bg-slate-900/60 rounded-lg px-4 py-2"><span className="text-sm text-slate-300">{labels[k] || k}</span><span className="text-sm font-bold text-violet-300">{v}</span></div>;
+              })}
+              <div className="bg-rose-900/30 border border-rose-700 rounded-lg p-3 mt-2">
+                <p className="text-xs text-rose-300 font-semibold">Impacto económico estimado (24h de parada)</p>
+                <p className="text-xl font-black text-rose-400">{biaResult.impacto_economico_estimado.coste_parada_24h}</p>
+              </div>
+              <p className="text-xs text-slate-400 italic">{biaResult.recomendacion_bcp_drp}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </PymeCard>
+  );
+}
+
+function BackupDrpSection() {
+  const [form, setForm] = React.useState({ volumen_datos_gb: 500, metodo_backup: "incremental", copias_fuera_sitio: 1, soportes_diferentes: 2 });
+  const [result, setResult] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  async function calculate() {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch("/v1/pyme/drp/calculate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setResult(await r.json());
+    } catch (e) {
+      setError("No se pudo calcular la estrategia de backup. Inténtalo de nuevo.");
+    } finally { setLoading(false); }
+  }
+
+  return (
+    <PymeCard title="💾 Estrategia de Backup 3-2-1 y Borrado Seguro — UD3 / UD6 M2">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="space-y-4">
+          <div>
+            <label className="text-xs text-slate-400 block mb-1">Volumen de datos: <span className="text-white font-bold">{form.volumen_datos_gb} GB</span></label>
+            <input type="range" min="10" max="10000" step="10" className="w-full accent-violet-500" value={form.volumen_datos_gb} onChange={e => setForm(f => ({...f, volumen_datos_gb: parseInt(e.target.value)}))} />
+          </div>
+          <div>
+            <label className="text-xs text-slate-400 block mb-1">Método de backup</label>
+            <select className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" value={form.metodo_backup} onChange={e => setForm(f => ({...f, metodo_backup: e.target.value}))}>
+              <option value="full">Full (Completo)</option>
+              <option value="incremental">Incremental</option>
+              <option value="diferencial">Diferencial</option>
+              <option value="mirror">Mirror (Réplica)</option>
+              <option value="cdp">CDP (Continuo)</option>
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><label className="text-xs text-slate-400 block mb-1">Copias fuera del sitio</label><input type="number" min="0" max="5" className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" value={form.copias_fuera_sitio} onChange={e => setForm(f => ({...f, copias_fuera_sitio: parseInt(e.target.value)}))} /></div>
+            <div><label className="text-xs text-slate-400 block mb-1">Soportes diferentes</label><input type="number" min="1" max="5" className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white" value={form.soportes_diferentes} onChange={e => setForm(f => ({...f, soportes_diferentes: parseInt(e.target.value)}))} /></div>
+          </div>
+          <button id="backup-calc-btn" onClick={calculate} disabled={loading} className="w-full py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">Evaluar Estrategia</button>
+          {error && (
+            <div className="bg-rose-900/30 border border-rose-600 rounded-lg p-3 text-sm text-rose-300">⚠️ {error}</div>
+          )}
+        </div>
+        {result && (
+          <div className="space-y-4">
+            <div className={`rounded-lg p-4 border ${result.regla_321.cumple ? "bg-emerald-900/30 border-emerald-600" : "bg-rose-900/30 border-rose-600"}`}>
+              <div className="flex items-center gap-2 mb-2"><span className="text-lg">{result.regla_321.cumple ? "✅" : "⚠️"}</span><span className="font-bold text-sm text-white">Regla 3-2-1</span></div>
+              <p className={`text-xs ${result.regla_321.cumple ? "text-emerald-300" : "text-rose-300"}`}>{result.regla_321.evaluacion}</p>
+              <div className="flex gap-4 mt-2 text-xs text-slate-400">
+                <span>📂 {result.regla_321.copias_totales} copias</span>
+                <span>💿 {result.regla_321.soportes_diferentes} soportes</span>
+                <span>🌐 {result.regla_321.copias_fuera_sitio} off-site</span>
+              </div>
+            </div>
+            <div className="bg-slate-900/60 rounded-lg p-3 border-l-4 border-violet-500">
+              <p className="text-xs text-slate-400 mb-1">Método: <span className="text-violet-300 font-semibold uppercase">{result.metodo_seleccionado}</span></p>
+              <p className="text-xs text-slate-300">{result.explicacion_metodo}</p>
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-slate-400 mb-2">Rotación GFS</p>
+              {Object.entries(result.esquema_rotacion_gfs).map(([k, v]) => (
+                <div key={k} className="flex gap-3 text-xs text-slate-300 mb-1"><span className="text-violet-400 shrink-0 font-semibold w-28">{k}</span><span>{v}</span></div>
+              ))}
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-slate-400 mb-2">Borrado Seguro</p>
+              {Object.entries(result.protocolos_borrado_seguro).map(([k, v]) => (
+                <div key={k} className="bg-slate-900/40 rounded p-2 mb-1.5"><p className="text-xs font-semibold text-slate-300">{k}</p><p className="text-xs text-slate-400">{v}</p></div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </PymeCard>
+  );
+}
+
+function AttackSimulatorSection() {
+  const [vector, setVector] = React.useState("sqli_waf");
+  const [defense, setDefense] = React.useState("waf");
+  const [result, setResult] = React.useState(null);
+  const [loading, setLoading] = React.useState(false);
+  const [history, setHistory] = React.useState([]);
+  const [error, setError] = React.useState(null);
+
+  async function simulate() {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch("/v1/pyme/simulation/attack", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vector_ataque: vector, tecnologia_defensa: defense }) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      setResult(data);
+      setHistory(h => [{ vector, defense, bloqueado: data.resultado_simulacion.bloqueado, ts: new Date().toLocaleTimeString() }, ...h.slice(0, 4)]);
+    } catch (e) {
+      setError("No se pudo ejecutar la simulación. Inténtalo de nuevo.");
+    } finally { setLoading(false); }
+  }
+
+  return (
+    <PymeCard title="🎯 Laboratorio de Ataques y Defensas — 9 Vectores del Temario">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="space-y-3">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Vector de Ataque</p>
+          <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+            {ATTACK_VECTORS.map(v => (
+              <button key={v.id} onClick={() => setVector(v.id)}
+                className={`w-full text-left text-xs px-3 py-2 rounded-lg border transition-all ${vector === v.id ? "bg-rose-900/50 border-rose-500 text-rose-200" : "border-slate-700 text-slate-400 hover:bg-slate-700"}`}>
+                {v.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="space-y-3">
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Defensa Aplicada</p>
+          <div className="grid grid-cols-2 gap-1.5">
+            {DEFENSES.map(d => (
+              <button key={d.id} onClick={() => setDefense(d.id)}
+                className={`text-xs px-2 py-2 rounded-lg border transition-all ${defense === d.id ? "bg-emerald-900/50 border-emerald-500 text-emerald-200" : "border-slate-700 text-slate-400 hover:bg-slate-700"}`}>
+                {d.label}
+              </button>
+            ))}
+          </div>
+          <button id="attack-simulate-btn" onClick={simulate} disabled={loading} className="w-full py-2.5 bg-rose-700 hover:bg-rose-600 rounded-lg text-sm font-bold transition-colors disabled:opacity-50">
+            {loading ? "⏳ Simulando..." : "🚀 Ejecutar Simulación"}
+          </button>
+          {error && (
+            <div className="bg-rose-900/30 border border-rose-600 rounded-lg p-3 text-sm text-rose-300">⚠️ {error}</div>
+          )}
+          {history.length > 0 && (
+            <div>
+              <p className="text-xs text-slate-400 mb-1">Historial</p>
+              {history.map((h, i) => (
+                <div key={i} className={`flex items-center gap-2 text-xs px-2 py-1 rounded border mb-1 ${h.bloqueado ? "border-emerald-800 text-emerald-400" : "border-rose-800 text-rose-400"}`}>
+                  <span>{h.bloqueado ? "✅" : "⚠️"}</span><span className="flex-1 truncate">{h.vector}</span><span className="text-slate-500">{h.ts}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          {result ? (
+            <div className={`rounded-xl p-4 border h-full ${result.resultado_simulacion.bloqueado ? "bg-emerald-900/30 border-emerald-600" : "bg-rose-900/30 border-rose-600"}`}>
+              <p className="text-sm font-bold text-white mb-2">{result.nombre_escenario}</p>
+              <p className={`text-xs font-semibold mb-3 ${result.resultado_simulacion.bloqueado ? "text-emerald-300" : "text-rose-300"}`}>{result.resultado_simulacion.mensaje}</p>
+              <div className="space-y-2 text-xs">
+                <div className="bg-slate-900/60 rounded p-2"><span className="text-slate-500">Unidad: </span><span className="text-slate-300">{result.unidad_didactica}</span></div>
+                <div className="bg-slate-900/60 rounded p-2"><span className="text-slate-500">Tríada CIA: </span><span className="text-amber-300">{result.triada_cia_afectada}</span></div>
+                <div className="bg-slate-900/60 rounded p-2"><span className="text-slate-500">Capa: </span><span className="text-blue-300">{result.capa_defensa_afectada}</span></div>
+                <div className="bg-violet-900/30 border border-violet-700 rounded p-2"><span className="text-violet-400 font-semibold">Defensa óptima: </span><span className="text-slate-300">{result.defensa_recomendada}</span></div>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {result.defensas_efectivas.map(d => <span key={d} className={`px-2 py-0.5 rounded-full text-xs border ${defense === d ? "bg-emerald-700 border-emerald-500 text-white" : "border-slate-600 text-slate-400"}`}>{d}</span>)}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-full min-h-48 text-slate-600 text-sm">
+              <span className="text-4xl mb-2">🛡️</span><span>Selecciona un ataque y una defensa</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </PymeCard>
+  );
+}
+
+function AuditSection() {
+  const [checklist, setChecklist] = React.useState([]);
+  const [answers, setAnswers] = React.useState({});
+  const [result, setResult] = React.useState(null);
+  const [loaded, setLoaded] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  React.useEffect(() => {
+    fetch("/v1/pyme/audit/checklist")
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then(data => { setChecklist(data.controles); setLoaded(true); })
+      .catch(() => { setError("No se pudo cargar el checklist de auditoría."); setLoaded(true); });
+  }, []);
+
+  async function evaluate() {
+    setError(null);
+    try {
+      const r = await fetch("/v1/pyme/audit/evaluate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ respuestas: answers }) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setResult(await r.json());
+    } catch (e) {
+      setError("No se pudo evaluar la madurez de seguridad. Inténtalo de nuevo.");
+    }
+  }
+
+  const categorias = [...new Set(checklist.map(c => c.categoria))];
+  const cumplidos = Object.values(answers).filter(Boolean).length;
+
+  return (
+    <PymeCard title="🔍 Auditoría ISO 27001 / RGPD — 15 Controles Clave">
+      {error && (
+        <div className="mb-4 bg-rose-900/30 border border-rose-600 rounded-lg p-3 text-sm text-rose-300">⚠️ {error}</div>
+      )}
+      {!loaded ? <p className="text-slate-400 text-sm">Cargando controles...</p> : checklist.length === 0 ? null : (
+        <>
+          <div className="mb-5">
+            <div className="flex justify-between text-xs text-slate-400 mb-1"><span>Progreso</span><span className="font-bold text-white">{cumplidos} / {checklist.length}</span></div>
+            <div className="h-2.5 bg-slate-700 rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-violet-600 to-emerald-500 transition-all duration-500 rounded-full" style={{width:`${(cumplidos/checklist.length)*100}%`}} />
+            </div>
+          </div>
+          <div className="space-y-4 mb-6 max-h-96 overflow-y-auto pr-1">
+            {categorias.map(cat => (
+              <div key={cat}>
+                <p className="text-xs font-bold text-violet-400 mb-2 uppercase tracking-wide">{cat}</p>
+                {checklist.filter(c => c.categoria === cat).map(control => (
+                  <label key={control.id} className="flex items-start gap-3 cursor-pointer mb-2 group">
+                    <input type="checkbox" className="mt-0.5 accent-emerald-500 shrink-0" checked={!!answers[control.id]} onChange={e => setAnswers(a => ({...a, [control.id]: e.target.checked}))} />
+                    <span className={`text-xs leading-relaxed transition-colors ${answers[control.id] ? "text-emerald-300 line-through decoration-emerald-700" : "text-slate-300 group-hover:text-white"}`}>{control.titulo}</span>
+                  </label>
+                ))}
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-3">
+            <button id="audit-evaluate-btn" onClick={evaluate} className="px-5 py-2 bg-violet-600 hover:bg-violet-500 rounded-lg text-sm font-semibold transition-colors">📊 Evaluar Madurez</button>
+            <button onClick={() => { setAnswers({}); setResult(null); }} className="px-4 py-2 border border-slate-600 hover:bg-slate-700 rounded-lg text-sm transition-colors text-slate-400">Limpiar</button>
+            <button onClick={() => setAnswers(Object.fromEntries(checklist.map(c => [c.id, true])))} className="px-4 py-2 border border-emerald-700 hover:bg-emerald-900/30 rounded-lg text-sm transition-colors text-emerald-400">Marcar todo ✓</button>
+          </div>
+          {result && (
+            <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className={`rounded-xl p-5 border text-center ${result.color_badge === "emerald" ? "bg-emerald-900/30 border-emerald-600" : result.color_badge === "amber" ? "bg-amber-900/30 border-amber-600" : "bg-rose-900/30 border-rose-600"}`}>
+                <div className="text-5xl font-black mb-1" style={{color: MATURITY_COLORS[result.color_badge]}}>{result.porcentaje_cumplimiento}%</div>
+                <p className="text-xs font-semibold text-white mb-2">{result.nivel_madurez}</p>
+                <p className="text-xs text-slate-400">{result.cumplidos} de {result.total_controles} controles cumplidos</p>
+              </div>
+              {result.puntos_mejora_prioritarios.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-amber-400 mb-2">⚡ Puntos de mejora prioritarios</p>
+                  <ul className="space-y-1.5">
+                    {result.puntos_mejora_prioritarios.map((p, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs text-slate-300"><span className="text-amber-500 shrink-0">{i+1}.</span>{p}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </PymeCard>
+  );
+}
+
+function PymeCybersecurityPanel() {
+  const [activeSection, setActiveSection] = React.useState("pds");
+  const sections = [
+    { id: "pds",      label: "📋 PDS",           component: <PdsSection /> },
+    { id: "risk",     label: "📐 Riesgos & BIA",  component: <RiskMatrixSection /> },
+    { id: "backup",   label: "💾 Backup & DRP",   component: <BackupDrpSection /> },
+    { id: "attacks",  label: "🎯 Simulador",      component: <AttackSimulatorSection /> },
+    { id: "audit",    label: "🔍 Auditoría",      component: <AuditSection /> },
+  ];
+  const active = sections.find(s => s.id === activeSection);
+  return (
+    <div className="p-4 space-y-4">
+      <div className="bg-gradient-to-r from-violet-900/60 to-indigo-900/60 border border-violet-700/50 rounded-xl p-5">
+        <h2 className="text-lg font-bold text-white mb-1">🏛️ Ciberseguridad PYME — Aplicación Práctica del Curso</h2>
+        <p className="text-sm text-slate-400">Integración de las 18 Unidades Didácticas: Plan Director · Riesgos · Backup · Ataques · Auditoría ISO 27001 / RGPD</p>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {sections.map(s => (
+          <button key={s.id} onClick={() => setActiveSection(s.id)}
+            className={`text-sm px-4 py-2 rounded-lg border font-medium transition-all ${activeSection === s.id ? "bg-violet-600 border-violet-500 text-white shadow-lg shadow-violet-900/40" : "border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-white"}`}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+      {active && active.component}
+    </div>
+  );
+}
+
+
 const TABS = [
   { id: 'monitoring', label: '🖥️ Monitorización', Component: MonitoringPanel },
   { id: 'incidents', label: '🛡️ Incidentes', Component: IncidentsPanel },
@@ -1247,6 +1798,7 @@ const TABS = [
   { id: 'campaigns', label: '🎓 Campañas', Component: CampaignsPanel },
   { id: 'chat', label: '💬 Chat IA', Component: AIChatPanel },
   { id: 'executive', label: '📊 Ejecutivo', Component: ExecutivePanel },
+  { id: 'pyme', label: '🏛️ Ciberseguridad PYME', Component: PymeCybersecurityPanel },
 ];
 
 function App() {
