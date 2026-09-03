@@ -22,6 +22,40 @@
 </head>
 <body>
 <div id="root"></div>
+<script>
+// Añadido 2026-09-03: todo /v1/* pasó a exigir la cabecera X-SIAM-API-Key
+// (ver api_key_middleware en siem/main.py) tras descubrir el backend
+// expuesto sin ninguna autenticación. Este shim pide la clave una vez por
+// navegador, la guarda en localStorage y la añade automáticamente a toda
+// petición fetch("/v1/...") sin tocar los fetch() existentes uno a uno. Si
+// el backend responde 401 (clave ausente o incorrecta), se limpia y se
+// vuelve a pedir.
+(function () {
+  var KEY_STORAGE = 'siam_api_key';
+  function getKey() {
+    var k = localStorage.getItem(KEY_STORAGE);
+    if (!k) {
+      k = window.prompt('Clave de API de SIAM (X-SIAM-API-Key):') || '';
+      if (k) localStorage.setItem(KEY_STORAGE, k);
+    }
+    return k;
+  }
+  var originalFetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    var url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (url.indexOf('/v1/') === 0) {
+      init = init || {};
+      init.headers = Object.assign({}, init.headers, { 'X-SIAM-API-Key': getKey() });
+    }
+    return originalFetch(input, init).then(function (res) {
+      if (res.status === 401 && url.indexOf('/v1/') === 0) {
+        localStorage.removeItem(KEY_STORAGE);
+      }
+      return res;
+    });
+  };
+})();
+</script>
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useRef } = React;
 
@@ -280,6 +314,17 @@ function IncidentsPanel() {
   const [explaining, setExplaining] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [killchaining, setKillchaining] = useState(false);
+  const [pageSize, setPageSize] = useState(10);
+  const detailRef = useRef(null);
+
+  // En móvil el panel de detalle cae debajo de la lista (grid de 1 columna);
+  // sin este scroll, seleccionar un incidente en una lista larga parecía no
+  // hacer nada hasta bajar a mano.
+  useEffect(() => {
+    if (selected && detailRef.current) {
+      detailRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [selected]);
 
   async function loadIncidents() {
     try {
@@ -368,40 +413,51 @@ function IncidentsPanel() {
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 bg-slate-900 rounded-xl border border-slate-800 shadow-lg overflow-hidden">
-        {/* En móvil la tabla de 5 columnas se desplaza en horizontal en vez de aplastarse */}
-        <div className="overflow-x-auto">
-        <div className="min-w-[560px]">
-        <div className="grid grid-cols-5 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 px-4 py-2">
+        {/* En móvil la fila se apila en tarjeta (sin scroll lateral); a partir de sm: vuelve a grid de 5 columnas */}
+        <div className="hidden sm:grid sm:grid-cols-5 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 px-4 py-2 items-center">
           <div className="col-span-2">Incidente</div><div>Severidad</div><div>Estado</div><div>Riesgo</div>
         </div>
+        {!loading && incidents.length > 0 && (
+          <div className="flex items-center justify-between gap-2 px-4 py-2 text-xs text-slate-500 border-b border-slate-900">
+            <span>Mostrando {Math.min(pageSize, incidents.length)} de {incidents.length}</span>
+            <div className="flex gap-1">
+              {[10, 50, 100].map((n) => (
+                <button key={n} onClick={() => setPageSize(n)}
+                  className={`px-2 py-0.5 rounded border ${pageSize === n ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-700 hover:bg-slate-800'}`}>
+                  {n}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {loading ? (
           <div className="p-4 text-slate-500 italic">Cargando...</div>
         ) : incidents.length === 0 ? (
           <div className="p-4 text-slate-500 italic">Sin incidentes todavía — genera un evento en Monitorización.</div>
         ) : (
-          incidents.map((inc) => (
+          incidents.slice(0, pageSize).map((inc) => (
             <button key={inc.id} onClick={() => setSelected(inc)}
-              className={`w-full text-left grid grid-cols-5 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-800/60 ${selected && selected.id === inc.id ? 'bg-slate-800/80' : ''}`}>
-              <div className="col-span-2 truncate">
+              className={`w-full text-left flex flex-col gap-2 sm:grid sm:grid-cols-5 sm:gap-2 sm:items-center px-4 py-3 border-b border-slate-900 hover:bg-slate-800/60 ${selected && selected.id === inc.id ? 'bg-slate-800/80' : ''}`}>
+              <div className="sm:col-span-2 truncate">
                 <div className="font-semibold truncate">{inc.title}</div>
                 <div className="text-xs text-slate-500">{inc.id} · {fmtDateTime(inc.created_at)}</div>
               </div>
-              <div><span className={`px-2 py-0.5 rounded text-[10px] border ${SEVERITY_STYLE[inc.severity] || SEVERITY_STYLE.info}`}>{inc.severity}</span></div>
-              <div className="text-xs text-slate-400">
-                {STATUS_LABEL[inc.status] || inc.status}
-                {inc.resolved_at && (
-                  <div className="text-[10px] text-emerald-500">⏱ {fmtDuration(parseUtc(inc.resolved_at) - parseUtc(inc.created_at))}</div>
-                )}
+              <div className="flex flex-wrap items-center gap-2 sm:contents">
+                <span className={`px-2 py-0.5 rounded text-[10px] border ${SEVERITY_STYLE[inc.severity] || SEVERITY_STYLE.info}`}>{inc.severity}</span>
+                <div className="text-xs text-slate-400">
+                  {STATUS_LABEL[inc.status] || inc.status}
+                  {inc.resolved_at && (
+                    <div className="text-[10px] text-emerald-500">⏱ {fmtDuration(parseUtc(inc.resolved_at) - parseUtc(inc.created_at))}</div>
+                  )}
+                </div>
+                <div className="text-xs font-mono">{inc.risk_score}/100</div>
               </div>
-              <div className="text-xs font-mono">{inc.risk_score}/100</div>
             </button>
           ))
         )}
-        </div>
-        </div>
       </div>
 
-      <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-4">
+      <div ref={detailRef} className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-4">
         {!selected ? (
           <p className="text-slate-500 italic text-sm">Selecciona un incidente para ver el detalle.</p>
         ) : (
