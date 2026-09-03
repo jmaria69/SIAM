@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="es" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=1920, height=1080">
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        width: 1920px;
+        height: 1080px;
+        overflow: hidden;
+        background: #0a0f1a;
+      }
+      body {
+        font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        color: #e7ecf5;
+      }
+      .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+      /* -- design tokens, shared across every slide -- */
+      :root {
+        --bg: #0a0f1a;
+        --surface: #111927;
+        --surface-2: #16202f;
+        --border: #253247;
+        --text: #e7ecf5;
+        --text-dim: #93a1b8;
+        --accent: #38bdf8;
+        --accent-soft: rgba(56,189,248,0.12);
+        --good: #34d399;
+        --good-soft: rgba(52,211,153,0.14);
+        --warn: #fbbf24;
+        --warn-soft: rgba(251,191,36,0.14);
+        --risk: #fb7185;
+        --risk-soft: rgba(251,113,133,0.14);
+      }
+
+      .slide {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        background:
+          radial-gradient(1200px 600px at 85% -10%, var(--accent-soft), transparent 60%),
+          var(--bg);
+        padding: 100px 140px;
+      }
+      .slide-inner { display: flex; flex-direction: column; gap: 40px; max-width: 1640px; }
+
+      .kicker {
+        font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        font-size: 26px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--accent);
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      .kicker .dot { width: 10px; height: 10px; border-radius: 999px; background: var(--accent); }
+
+      h1.headline {
+        font-size: 76px;
+        font-weight: 700;
+        line-height: 1.12;
+        max-width: 20ch;
+        letter-spacing: -0.01em;
+      }
+      h1.headline.big { font-size: 96px; }
+
+      .bullets { display: flex; flex-direction: column; gap: 26px; margin-top: 8px; }
+      .bullet {
+        display: flex;
+        align-items: flex-start;
+        gap: 22px;
+        font-size: 40px;
+        color: var(--text-dim);
+        max-width: 30ch;
+      }
+      .bullet .mark {
+        flex-shrink: 0;
+        width: 44px; height: 44px;
+        border-radius: 10px;
+        display: flex; align-items: center; justify-content: center;
+        font-family: ui-monospace, monospace;
+        font-weight: 700;
+        font-size: 22px;
+        margin-top: 4px;
+      }
+      .mark.risk { background: var(--risk-soft); color: var(--risk); }
+      .mark.good { background: var(--good-soft); color: var(--good); }
+      .mark.warn { background: var(--warn-soft); color: var(--warn); }
+      .mark.accent { background: var(--accent-soft); color: var(--accent); }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        font-family: ui-monospace, monospace;
+        font-size: 22px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 10px 22px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--text-dim);
+        width: fit-content;
+      }
+      .badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+      .badge.good { background: var(--good-soft); color: var(--good); border-color: transparent; }
+
+      .footer-line {
+        position: absolute;
+        bottom: 60px;
+        left: 140px;
+        right: 140px;
+        display: flex;
+        justify-content: space-between;
+        font-family: ui-monospace, monospace;
+        font-size: 22px;
+        color: var(--text-dim);
+        opacity: 0.7;
+      }
+
+      .shot-frame {
+        border: 1px solid var(--border);
+        border-radius: 16px;
+        overflow: hidden;
+        box-shadow: 0 30px 80px -30px rgba(0,0,0,0.6);
+        background: var(--surface);
+        width: 1520px;
+        height: 680px;
+      }
+      .shot-frame img { display: block; width: 100%; height: 680px; object-fit: cover; object-position: top; }
+      .shot-caption {
+        font-family: ui-monospace, monospace;
+        font-size: 24px;
+        color: var(--text-dim);
+        padding: 20px 28px;
+        border-top: 1px solid var(--border);
+        background: var(--surface-2);
+      }
+
+      /* -- standalone deck navigation (self-contained, no external engine needed) -- */
+      [data-composition-id] { display: none; }
+      [data-composition-id].deck-active { display: block; }
+
+      #deck-nav {
+        position: fixed;
+        bottom: 40px;
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        padding: 12px 18px;
+        border-radius: 999px;
+        background: rgba(17, 25, 39, 0.85);
+        border: 1px solid var(--border);
+        backdrop-filter: blur(6px);
+        z-index: 1000;
+        font-family: ui-monospace, monospace;
+        font-size: 20px;
+        color: var(--text-dim);
+      }
+      #deck-nav button {
+        appearance: none;
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        color: var(--text);
+        width: 40px;
+        height: 40px;
+        border-radius: 999px;
+        cursor: pointer;
+        font-size: 20px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #deck-nav button:hover { background: var(--accent-soft); color: var(--accent); }
+      #deck-nav button:disabled { opacity: 0.35; cursor: default; }
+      #deck-nav button:disabled:hover { background: var(--surface-2); color: var(--text); }
+      #deck-counter { min-width: 64px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <script type="application/hyperframes-slideshow+json">
+      {
+        "slides": [
+          { "sceneId": "cover", "notes": "Portada. Pausa 1-2s antes de avanzar." },
+          { "sceneId": "problem", "notes": "El dolor: PYMEs sin vigilancia 24/7." },
+          { "sceneId": "solution", "notes": "Una frase: qué es SIEM Security." },
+          { "sceneId": "differentiator", "notes": "El diferenciador: kill-chain narrada por IA." },
+          { "sceneId": "privacy", "notes": "Self-hosted + LLM local. Argumento de confianza." },
+          { "sceneId": "product-monitoring", "notes": "Captura real del panel de Monitorización." },
+          { "sceneId": "product-pyme", "notes": "Captura real del módulo Ciberseguridad PYME." },
+          { "sceneId": "product-incidents", "notes": "Captura real del panel de Incidentes." },
+          { "sceneId": "pyme-detail", "notes": "Los 5 sub-bloques del módulo PYME." },
+          { "sceneId": "stage", "notes": "Honestidad: es un MVP, buscamos early adopters." },
+          { "sceneId": "cta", "notes": "Cierre. Pide la demo, no vendas un precio." }
+        ],
+        "slideSequences": []
+      }
+    </script>
+
+    <!-- 1. COVER -->
+    <div data-hf-id="hf-b2ch" id="cover" data-composition-id="cover" data-start="0" data-duration="6" data-label="Portada" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-avdz" class="clip" id="cover-scene" data-start="0" data-duration="6" data-track-index="1" style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 34px; background: radial-gradient(1400px 700px at 50% 20%, var(--accent-soft), transparent 60%), var(--bg);">
+        <div data-hf-id="hf-zyn8" id="cover-badge" class="badge warn">MVP · en desarrollo activo</div>
+        <h1 data-hf-id="hf-xtg9" id="cover-title" class="mono" style="font-size: 128px; font-weight: 700; letter-spacing: -0.02em; color: var(--text);">SIEM<span data-hf-id="hf-xl33" style="color: var(--accent);">_</span>Security</h1>
+        <p data-hf-id="hf-ndmc" id="cover-sub" style="font-size: 46px; color: var(--text-dim); text-align: center; max-width: 26ch;">SOC virtual con IA para PYMEs</p>
+        <p data-hf-id="hf-llqx" id="cover-url" class="mono" style="font-size: 28px; color: var(--accent); letter-spacing: 0.04em; margin-top: 20px;">siem.praxialabs.com</p>
+      </section>
+    </div>
+
+    <!-- 2. PROBLEM -->
+    <div data-hf-id="hf-ipln" id="problem" data-composition-id="problem" data-start="6" data-duration="6" data-label="El problema" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-wrww" class="clip" id="problem-scene" data-start="6" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-1zdz" class="slide">
+          <div data-hf-id="hf-ubrc" class="slide-inner">
+            <div data-hf-id="hf-jmb0" class="kicker"><span data-hf-id="hf-9gry" class="dot"></span>El problema</div>
+            <h1 data-hf-id="hf-dx4x" id="problem-headline" class="headline big">Las PYMEs no tienen un SOC vigilando 24/7. Los atacantes lo saben.</h1>
+            <div data-hf-id="hf-yodn" class="bullets">
+              <div data-hf-id="hf-a7od" id="problem-b1" class="bullet"><span data-hf-id="hf-ozxy" class="mark risk">✕</span>Un equipo de seguridad propio está fuera de presupuesto</div>
+              <div data-hf-id="hf-p6s8" id="problem-b2" class="bullet"><span data-hf-id="hf-txei" class="mark risk">✕</span>Las alertas se revisan "cuando alguien puede"</div>
+              <div data-hf-id="hf-huwy" id="problem-b3" class="bullet"><span data-hf-id="hf-ubpj" class="mark risk">✕</span>La mayoría de brechas no son sofisticadas — son huecos de vigilancia</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 3. SOLUTION -->
+    <div data-hf-id="hf-nsng" id="solution" data-composition-id="solution" data-start="12" data-duration="6" data-label="La solución" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-gb2r" class="clip" id="solution-scene" data-start="12" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-rnd3" class="slide">
+          <div data-hf-id="hf-d7y8" class="slide-inner">
+            <div data-hf-id="hf-n18c" class="kicker"><span data-hf-id="hf-zcc2" class="dot"></span>La solución</div>
+            <h1 data-hf-id="hf-0ib3" id="solution-headline" class="headline big">Un SOC virtual con IA que puedes instalar tú mismo.</h1>
+            <div data-hf-id="hf-m9jf" class="bullets">
+              <div data-hf-id="hf-18ov" id="solution-b1" class="bullet"><span data-hf-id="hf-n0d2" class="mark accent">→</span>Monitorización, incidentes correlacionados y panel ejecutivo en un solo lugar</div>
+              <div data-hf-id="hf-3mbt" id="solution-b2" class="bullet"><span data-hf-id="hf-03ui" class="mark accent">→</span>Corre en Docker, sobre tu propia infraestructura</div>
+              <div data-hf-id="hf-hvfo" id="solution-b3" class="bullet"><span data-hf-id="hf-0i5j" class="mark accent">→</span>No es un SaaS al que le mandas tus logs — es tuyo</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 4. DIFFERENTIATOR -->
+    <div data-hf-id="hf-ogr0" id="differentiator" data-composition-id="differentiator" data-start="18" data-duration="6" data-label="Diferenciador" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-tos4" class="clip" id="differentiator-scene" data-start="18" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-r922" class="slide">
+          <div data-hf-id="hf-c115" class="slide-inner">
+            <div data-hf-id="hf-wodp" class="kicker"><span data-hf-id="hf-zqn3" class="dot"></span>El diferenciador</div>
+            <h1 data-hf-id="hf-c7rj" id="diff-headline" class="headline big">No solo detecta el ataque. Explica cómo pasó.</h1>
+            <div data-hf-id="hf-lv8e" class="bullets">
+              <div data-hf-id="hf-6kpm" id="diff-b1" class="bullet"><span data-hf-id="hf-5ua1" class="mark accent">↳</span>Reconstruye la kill-chain MITRE ATT&amp;CK de cada incidente</div>
+              <div data-hf-id="hf-og4v" id="diff-b2" class="bullet"><span data-hf-id="hf-1dh9" class="mark accent">↳</span>La narra en lenguaje natural con IA — no un log ilegible</div>
+              <div data-hf-id="hf-vzl4" id="diff-b3" class="bullet"><span data-hf-id="hf-2kec" class="mark accent">↳</span>Un gerente sin formación técnica puede entenderla</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 5. PRIVACY -->
+    <div data-hf-id="hf-p95d" id="privacy" data-composition-id="privacy" data-start="24" data-duration="6" data-label="Privacidad" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-dzv1" class="clip" id="privacy-scene" data-start="24" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-qur1" class="slide">
+          <div data-hf-id="hf-cfc6" class="slide-inner">
+            <div data-hf-id="hf-p672" class="kicker"><span data-hf-id="hf-04y4" class="dot"></span>Privacidad</div>
+            <h1 data-hf-id="hf-9n6c" id="privacy-headline" class="headline big">Tus logs de seguridad no salen de tu red.</h1>
+            <div data-hf-id="hf-lgxd" class="bullets">
+              <div data-hf-id="hf-zfdo" id="privacy-b1" class="bullet"><span data-hf-id="hf-edga" class="mark good">✓</span>Self-hosted en Docker, sobre tu propia infraestructura</div>
+              <div data-hf-id="hf-jhdx" id="privacy-b2" class="bullet"><span data-hf-id="hf-xk8u" class="mark good">✓</span>Análisis con LLM 100% local vía Ollama — sin mandar datos a terceros</div>
+              <div data-hf-id="hf-yayv" id="privacy-b3" class="bullet"><span data-hf-id="hf-xyjv" class="mark good">✓</span>O sin IA en absoluto: modo reglas, sin ninguna API key</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 6. PRODUCT: MONITORING -->
+    <div data-hf-id="hf-w4o3" id="product-monitoring" data-composition-id="product-monitoring" data-start="30" data-duration="6" data-label="Panel de Monitorización" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-b2ba" class="clip" id="product-monitoring-scene" data-start="30" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-tc4f" class="slide" style="align-items: center; justify-content: center;">
+          <div data-hf-id="hf-gxcq" class="slide-inner" style="align-items: center; max-width: 1520px;">
+            <div data-hf-id="hf-d43t" class="kicker"><span data-hf-id="hf-0j95" class="dot"></span>El producto, en vivo</div>
+            <div data-hf-id="hf-3wyp" id="shot-monitoring" class="shot-frame">
+              <img data-hf-id="hf-l3id" src="media/monitoring.png" alt="Panel de Monitorización de SIEM Security">
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 7. PRODUCT: PYME MODULE -->
+    <div data-hf-id="hf-oti3" id="product-pyme" data-composition-id="product-pyme" data-start="36" data-duration="6" data-label="Módulo Ciberseguridad PYME" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-rh3t" class="clip" id="product-pyme-scene" data-start="36" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-3j8f" class="slide" style="align-items: center; justify-content: center;">
+          <div data-hf-id="hf-yl8e" class="slide-inner" style="align-items: center; max-width: 1520px;">
+            <div data-hf-id="hf-ga9p" class="kicker"><span data-hf-id="hf-0xk6" class="dot"></span>El producto, en vivo</div>
+            <div data-hf-id="hf-ktfg" id="shot-pyme" class="shot-frame">
+              <img data-hf-id="hf-v450" src="media/pyme.png" alt="Módulo Ciberseguridad PYME de SIEM Security">
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 8. PRODUCT: INCIDENTS -->
+    <div data-hf-id="hf-1wgl" id="product-incidents" data-composition-id="product-incidents" data-start="42" data-duration="6" data-label="Panel de Incidentes" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-9yxm" class="clip" id="product-incidents-scene" data-start="42" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-34xe" class="slide" style="align-items: center; justify-content: center;">
+          <div data-hf-id="hf-yzjf" class="slide-inner" style="align-items: center; max-width: 1520px;">
+            <div data-hf-id="hf-hh6s" class="kicker"><span data-hf-id="hf-1bv7" class="dot"></span>El producto, en vivo</div>
+            <div data-hf-id="hf-tw3k" id="shot-incidents" class="shot-frame">
+              <img data-hf-id="hf-ba0k" src="media/incidentes.png" alt="Panel de Incidentes de SIEM Security">
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 9. PYME MODULE DETAIL -->
+    <div data-hf-id="hf-r4j3" id="pyme-detail" data-composition-id="pyme-detail" data-start="48" data-duration="6" data-label="Módulo PYME en detalle" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-0lp4" class="clip" id="pyme-detail-scene" data-start="48" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-xovc" class="slide">
+          <div data-hf-id="hf-b8f3" class="slide-inner">
+            <div data-hf-id="hf-4tpv" class="kicker"><span data-hf-id="hf-1q68" class="dot"></span>Ciberseguridad PYME</div>
+            <h1 data-hf-id="hf-7odd" id="pd-headline" class="headline">Un curso de 18 unidades, convertido en herramienta.</h1>
+            <div data-hf-id="hf-syvk" class="bullets" style="margin-top: 4px;">
+              <div data-hf-id="hf-5ty1" id="pd-b1" class="bullet" style="font-size: 34px;"><span data-hf-id="hf-v8oj" class="mark accent">01</span>Plan Director de Seguridad</div>
+              <div data-hf-id="hf-s0cj" id="pd-b2" class="bullet" style="font-size: 34px;"><span data-hf-id="hf-uudi" class="mark accent">02</span>Matriz de riesgos + BIA (RTO/RPO)</div>
+              <div data-hf-id="hf-e0h2" id="pd-b3" class="bullet" style="font-size: 34px;"><span data-hf-id="hf-ug2h" class="mark accent">03</span>Backup 3-2-1, DRP y borrado seguro</div>
+              <div data-hf-id="hf-eqja" id="pd-b4" class="bullet" style="font-size: 34px;"><span data-hf-id="hf-u1rg" class="mark accent">04</span>Auditoría ISO 27001 / RGPD con puntuación de madurez</div>
+              <div data-hf-id="hf-5c80" id="pd-b5" class="bullet" style="font-size: 34px;"><span data-hf-id="hf-tngf" class="mark accent">05</span>Simulador de 9 vectores de ataque reales</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 10. STAGE -->
+    <div data-hf-id="hf-7ihy" id="stage" data-composition-id="stage" data-start="54" data-duration="6" data-label="Etapa actual" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-x3yy" class="clip" id="stage-scene" data-start="54" data-duration="6" data-track-index="1" style="position: absolute; inset: 0;">
+        <div data-hf-id="hf-xakb" class="slide">
+          <div data-hf-id="hf-bmq4" class="slide-inner">
+            <div data-hf-id="hf-c1h3" class="kicker"><span data-hf-id="hf-vrkt" class="dot"></span>Dónde estamos</div>
+            <h1 data-hf-id="hf-ti1c" id="stage-headline" class="headline big">Todavía es un MVP. Y eso es una ventaja.</h1>
+            <div data-hf-id="hf-l2mc" class="bullets">
+              <div data-hf-id="hf-o5qb" id="stage-b1" class="bullet"><span data-hf-id="hf-ka1z" class="mark warn">●</span>En desarrollo activo — sin precio ni plan comercial cerrado</div>
+              <div data-hf-id="hf-z78m" id="stage-b2" class="bullet"><span data-hf-id="hf-4ps7" class="mark warn">●</span>Buscamos 5-10 PYMEs para probarlo en fase temprana</div>
+              <div data-hf-id="hf-w3qx" id="stage-b3" class="bullet"><span data-hf-id="hf-4bh6" class="mark warn">●</span>Tu feedback entra directo al producto, no a un backlog</div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 11. CTA -->
+    <div data-hf-id="hf-cnt0" id="cta" data-composition-id="cta" data-start="60" data-duration="6" data-label="Cierre" data-width="1920" data-height="1080" style="position: relative; width: 1920px; height: 1080px; overflow: hidden;">
+      <section data-hf-id="hf-fmjz" class="clip" id="cta-scene" data-start="60" data-duration="6" data-track-index="1" style="position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 30px; background: radial-gradient(1400px 700px at 50% 30%, var(--accent-soft), transparent 60%), var(--bg);">
+        <div data-hf-id="hf-f1aj" class="kicker"><span data-hf-id="hf-w5vu" class="dot"></span>Siguiente paso</div>
+        <h1 data-hf-id="hf-pr16" id="cta-headline" class="headline big" style="text-align: center; max-width: 22ch;">¿Hablamos de tu seguridad?</h1>
+        <p data-hf-id="hf-bevg" id="cta-sub" style="font-size: 40px; color: var(--text-dim); text-align: center; max-width: 34ch;">Solicita una demo de SIEM Security — sin coste, sin compromiso.</p>
+        <p data-hf-id="hf-kn7v" id="cta-url" class="mono" style="font-size: 30px; color: var(--accent); margin-top: 10px;">siem.praxialabs.com</p>
+      </section>
+    </div>
+
+    <div data-hf-id="hf-oz6s" class="footer-line mono" id="deck-footer">
+      <span data-hf-id="hf-rlix">SIEM<span data-hf-id="hf-c45b" style="color: var(--accent);">_</span>Security</span>
+      <span data-hf-id="hf-i2wx">siem.praxialabs.com</span>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+
+      const problemTl = gsap.timeline({ paused: true });
+      window.__timelines["problem"] = problemTl;
+      problemTl.from("#problem-headline", { opacity: 0, y: 24, duration: 0.5 }, 0.0);
+      problemTl.from("#problem-b1", { opacity: 0, x: -20, duration: 0.4 }, 0.5);
+      problemTl.from("#problem-b2", { opacity: 0, x: -20, duration: 0.4 }, 0.8);
+      problemTl.from("#problem-b3", { opacity: 0, x: -20, duration: 0.4 }, 1.1);
+
+      const solutionTl = gsap.timeline({ paused: true });
+      window.__timelines["solution"] = solutionTl;
+      solutionTl.from("#solution-headline", { opacity: 0, y: 24, duration: 0.5 }, 0.0);
+      solutionTl.from("#solution-b1", { opacity: 0, x: -20, duration: 0.4 }, 0.5);
+      solutionTl.from("#solution-b2", { opacity: 0, x: -20, duration: 0.4 }, 0.8);
+      solutionTl.from("#solution-b3", { opacity: 0, x: -20, duration: 0.4 }, 1.1);
+
+      const diffTl = gsap.timeline({ paused: true });
+      window.__timelines["differentiator"] = diffTl;
+      diffTl.from("#diff-headline", { opacity: 0, y: 24, duration: 0.5 }, 0.0);
+      diffTl.from("#diff-b1", { opacity: 0, x: -20, duration: 0.4 }, 0.5);
+      diffTl.from("#diff-b2", { opacity: 0, x: -20, duration: 0.4 }, 0.8);
+      diffTl.from("#diff-b3", { opacity: 0, x: -20, duration: 0.4 }, 1.1);
+
+      const privacyTl = gsap.timeline({ paused: true });
+      window.__timelines["privacy"] = privacyTl;
+      privacyTl.from("#privacy-headline", { opacity: 0, y: 24, duration: 0.5 }, 0.0);
+      privacyTl.from("#privacy-b1", { opacity: 0, x: -20, duration: 0.4 }, 0.5);
+      privacyTl.from("#privacy-b2", { opacity: 0, x: -20, duration: 0.4 }, 0.8);
+      privacyTl.from("#privacy-b3", { opacity: 0, x: -20, duration: 0.4 }, 1.1);
+
+      const monTl = gsap.timeline({ paused: true });
+      window.__timelines["product-monitoring"] = monTl;
+      monTl.from("#shot-monitoring", { opacity: 0, y: 30, duration: 0.6 }, 0.0);
+
+      const pymeShotTl = gsap.timeline({ paused: true });
+      window.__timelines["product-pyme"] = pymeShotTl;
+      pymeShotTl.from("#shot-pyme", { opacity: 0, y: 30, duration: 0.6 }, 0.0);
+
+      const incTl = gsap.timeline({ paused: true });
+      window.__timelines["product-incidents"] = incTl;
+      incTl.from("#shot-incidents", { opacity: 0, y: 30, duration: 0.6 }, 0.0);
+
+      const pdTl = gsap.timeline({ paused: true });
+      window.__timelines["pyme-detail"] = pdTl;
+      pdTl.from("#pd-headline", { opacity: 0, y: 24, duration: 0.5 }, 0.0);
+      pdTl.from("#pd-b1", { opacity: 0, x: -20, duration: 0.35 }, 0.4);
+      pdTl.from("#pd-b2", { opacity: 0, x: -20, duration: 0.35 }, 0.65);
+      pdTl.from("#pd-b3", { opacity: 0, x: -20, duration: 0.35 }, 0.9);
+      pdTl.from("#pd-b4", { opacity: 0, x: -20, duration: 0.35 }, 1.15);
+      pdTl.from("#pd-b5", { opacity: 0, x: -20, duration: 0.35 }, 1.4);
+
+      const stageTl = gsap.timeline({ paused: true });
+      window.__timelines["stage"] = stageTl;
+      stageTl.from("#stage-headline", { opacity: 0, y: 24, duration: 0.5 }, 0.0);
+      stageTl.from("#stage-b1", { opacity: 0, x: -20, duration: 0.4 }, 0.5);
+      stageTl.from("#stage-b2", { opacity: 0, x: -20, duration: 0.4 }, 0.8);
+      stageTl.from("#stage-b3", { opacity: 0, x: -20, duration: 0.4 }, 1.1);
+
+      const ctaTl = gsap.timeline({ paused: true });
+      window.__timelines["cta"] = ctaTl;
+      ctaTl.from("#cta-headline", { opacity: 0, scale: 0.96, duration: 0.6 }, 0.0);
+      ctaTl.from("#cta-sub", { opacity: 0, y: 16, duration: 0.5 }, 0.5);
+      ctaTl.from("#cta-url", { opacity: 0, duration: 0.4 }, 1.0);
+
+      const coverTl = gsap.timeline({ paused: true });
+      window.__timelines["cover"] = coverTl;
+      coverTl.from("#cover-badge", { opacity: 0, y: -10, duration: 0.4 }, 0.0);
+      coverTl.from("#cover-title", { opacity: 0, y: 20, duration: 0.6 }, 0.3);
+      coverTl.from("#cover-sub", { opacity: 0, y: 16, duration: 0.5 }, 0.8);
+      coverTl.from("#cover-url", { opacity: 0, duration: 0.4 }, 1.2);
+    </script>
+
+    <!-- Standalone navigation chrome: works when this file is opened directly,
+         independent of the hyperframes-slideshow wrapper's engine bridge. -->
+    <nav data-hf-id="hf-104k" id="deck-nav">
+      <button data-hf-id="hf-sa5d" id="deck-prev" type="button" aria-label="Diapositiva anterior">‹</button>
+      <span data-hf-id="hf-4l46" id="deck-counter">1 / 11</span>
+      <button data-hf-id="hf-4lil" id="deck-next" type="button" aria-label="Siguiente diapositiva">›</button>
+    </nav>
+
+    <script>
+      (function () {
+        var order = [
+          "cover", "problem", "solution", "differentiator", "privacy",
+          "product-monitoring", "product-pyme", "product-incidents",
+          "pyme-detail", "stage", "cta"
+        ];
+        var scenes = order.map(function (id) { return document.getElementById(id); });
+        var current = 0;
+
+        function showSlide(i) {
+          current = Math.max(0, Math.min(order.length - 1, i));
+          scenes.forEach(function (el, idx) {
+            if (!el) return;
+            el.classList.toggle("deck-active", idx === current);
+          });
+          var tl = window.__timelines && window.__timelines[order[current]];
+          if (tl && typeof tl.restart === "function") tl.restart();
+          document.getElementById("deck-counter").textContent = (current + 1) + " / " + order.length;
+          document.getElementById("deck-prev").disabled = current === 0;
+          document.getElementById("deck-next").disabled = current === order.length - 1;
+        }
+
+        document.getElementById("deck-prev").addEventListener("click", function () { showSlide(current - 1); });
+        document.getElementById("deck-next").addEventListener("click", function () { showSlide(current + 1); });
+        window.addEventListener("keydown", function (e) {
+          if (e.key === "ArrowRight" || e.key === " ") { showSlide(current + 1); e.preventDefault(); }
+          else if (e.key === "ArrowLeft" || e.key === "Backspace") { showSlide(current - 1); e.preventDefault(); }
+        });
+
+        showSlide(0);
+      })();
+    </script>
+  </body>
+</html>
+

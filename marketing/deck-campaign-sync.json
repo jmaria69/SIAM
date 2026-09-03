@@ -1,0 +1,9 @@
+{
+  "slug": "siem-security-deck",
+  "name": "Deck SIEM Security",
+  "channel": "otro",
+  "targetUrl": "https://claude.ai/code/artifact/164fb399-b20f-45e7-8eed-6087479fd2d7",
+  "description": "Enlace corto y rastreado para compartir el pitch deck de SIEM Security (11 diapositivas, capturas reales del producto).",
+  "researchNotes": "Compañero de la campaña 'siem-security-launch': este enlace apunta al deck de presentación (Claude Artifact) en vez de al producto directamente. Pensado para seguimiento 1:1 tras un post de LinkedIn o para compartir antes de una demo — no para el post público en sí, porque LinkedIn no genera vista previa de un enlace de claude.ai. El artifact es privado por defecto: hay que activarlo desde su menú de compartir antes de distribuir este enlace.",
+  "videoUrl": null
+}
