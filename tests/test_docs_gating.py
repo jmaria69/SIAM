@@ -27,7 +27,7 @@ def test_docs_enabled_by_default_in_development():
 
 
 def test_docs_disabled_in_production():
-    app = create_app(Settings(ENVIRONMENT="production"))
+    app = create_app(Settings(ENVIRONMENT="production", SIAM_API_KEY="test-key"))
     client = TestClient(app)
 
     # FastAPI responde 404 real (la ruta no existe) cuando docs_url=None,

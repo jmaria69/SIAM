@@ -4,6 +4,14 @@ services:
     container_name: siem_backend
     env_file:
       - .env
+      # Overrides SOLO del despliegue real (ENVIRONMENT=production,
+      # SIAM_API_KEY) -- gitignored, no versionado, `required: false` para
+      # que `docker compose up` siga funcionando en cualquier clon/entorno
+      # que no tenga este fichero. Ver comentario en .env.production sobre
+      # por qué esto no vive en .env: pytest importa siem.main a nivel de
+      # módulo y heredaría estos valores, rompiendo el test suite.
+      - path: .env.production
+        required: false
     environment:
       # Bug real (2026-07-16): dentro del contenedor, el 127.0.0.1 del .env
       # es el propio contenedor, no el host donde escucha Ollama — "Explicar
@@ -14,7 +22,7 @@ services:
       # ejecutar uvicorn directamente en el host.
       LOCAL_LLM_URL: http://host.docker.internal:11434/v1
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     restart: unless-stopped
     volumes:
       - .:/app

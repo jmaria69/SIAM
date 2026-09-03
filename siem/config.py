@@ -32,6 +32,16 @@ class Settings(BaseSettings):
     # CORS — en producción esto debe restringirse a los dominios reales del cliente
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:8000,http://localhost:8001"
 
+    # Clave compartida que protege todo /v1/* (ver api_key_middleware en
+    # main.py). Sin ella, cualquiera que alcance el backend -- por el túnel,
+    # por la red local o por un futuro fallo de exposición de puerto como el
+    # de 2026-09-03 -- tenía acceso completo sin login: incidentes, datos de
+    # cliente PYME, y podía hacer que /v1/ai/chat y /v1/campaigns gastaran
+    # las claves de Anthropic/OpenAI/SMTP del backend. None en desarrollo no
+    # exige la cabecera (para no romper el flujo local); en producción es
+    # obligatoria -- create_app() aborta el arranque si falta.
+    SIAM_API_KEY: Optional[str] = None
+
     # Motor de IA plegable: anthropic | openai | local | none
     AI_PROVIDER: Literal["anthropic", "openai", "local", "none"] = "none"
     ANTHROPIC_API_KEY: Optional[str] = None

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from siem.metrics import metrics
 from siem.campaign_scheduler import run_scheduler_loop
@@ -94,6 +95,16 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     settings_ = settings_ or default_settings
     docs_enabled = settings_.ENVIRONMENT != "production"
 
+    # Fallo duro si producción arranca sin SIAM_API_KEY: sin esto, todo
+    # /v1/* quedaría de nuevo sin autenticación (ver api_key_middleware más
+    # abajo) -- exactamente el agujero encontrado el 2026-09-03.
+    if settings_.ENVIRONMENT == "production" and not settings_.SIAM_API_KEY:
+        raise RuntimeError(
+            "SIAM_API_KEY no está configurada en producción -- todo /v1/* "
+            "quedaría sin autenticación. Define SIAM_API_KEY en .env antes "
+            "de arrancar."
+        )
+
     app = FastAPI(
         title=settings_.APP_NAME,
         lifespan=lifespan,
@@ -137,6 +148,26 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
         """Métricas de escalabilidad en vivo (throughput + latencia)."""
         return {"ts": time.time(), "service": "siam", "traffic": metrics.snapshot()}
     # ---------------------------------------------------------------------
+
+    # --- AUTENTICACIÓN DE /v1/* CON API KEY COMPARTIDA ---
+    # Añadido 2026-09-03: se descubrió que todo /v1/* estaba expuesto sin
+    # ninguna autenticación propia -- cualquiera que alcanzara el backend
+    # (túnel, red local, o el fallo de puerto 8001 publicado en 0.0.0.0
+    # corregido el mismo día en docker-compose.yml) tenía acceso completo a
+    # incidentes y datos de cliente PYME, y podía hacer gastar las claves de
+    # Anthropic/OpenAI/SMTP del backend llamando a /v1/ai/chat o
+    # /v1/campaigns. Esta es una segunda capa independiente de Cloudflare
+    # Access -- protege aunque Access esté mal configurado, aunque el puerto
+    # se vuelva a exponer, o aunque la petición llegue desde dentro de la
+    # LAN/red Docker.
+    @app.middleware("http")
+    async def api_key_middleware(request: Request, call_next):
+        if request.url.path.startswith("/v1/") and settings_.SIAM_API_KEY:
+            provided = request.headers.get("x-siam-api-key")
+            if provided != settings_.SIAM_API_KEY:
+                return JSONResponse({"detail": "No autorizado"}, status_code=401)
+        return await call_next(request)
+    # -------------------------------------------------------------
 
     # CLAUDE.md decía "CORS gestionado en main.py" pero el main.py real no lo
     # tenía configurado (solo la versión antigua app.py, ya no usada). Se añade
