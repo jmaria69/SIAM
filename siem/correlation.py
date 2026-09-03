@@ -13,6 +13,7 @@ from typing import Optional
 
 from siem.config import get_settings
 from siem.models import Event, Incident, IncidentStatus, Severity, TimelineEntry
+from siem.notifications import notificar_incidente
 from siem.risk import calculate_incident_risk
 from siem.store import SiemStore
 from siem.threat_detection import detect_threats
@@ -102,12 +103,14 @@ def correlate_event(store: SiemStore, event: Event) -> Incident:
         _append_new_threat_recommendations(incident, event.threat_ids)
         incident.risk_score = calculate_incident_risk(incident, len(incident.affected_assets))
         store.add_incident(incident)
+        notificar_incidente(settings, incident)
         event.incident_id = incident.id
         return incident
 
     # Se une al incidente existente: agrupa, reduce ruido de falsos positivos
     # duplicados y sube severidad si el nuevo evento es más grave.
     candidate.event_ids.append(event.id)
+    severity_antes = candidate.severity
     candidate.severity = _max_severity(candidate.severity, event.severity)
     if ref and ref not in candidate.affected_assets:
         candidate.affected_assets.append(ref)
@@ -123,4 +126,13 @@ def correlate_event(store: SiemStore, event: Event) -> Incident:
     candidate.updated_at = datetime.utcnow()
     store.update_incident(candidate)
     event.incident_id = candidate.id
+
+    # Reavisa solo si la severidad ESCALA (p.ej. media -> crítica): un
+    # incidente que solo suma eventos del mismo nivel ya avisó al abrirse y
+    # no debe repetir email por cada correlación (el ruido que el diseño
+    # original evitaba a propósito). Pero una escalada real es información
+    # nueva que el SOC necesita, no debería quedar en silencio.
+    if candidate.severity != severity_antes:
+        notificar_incidente(settings, candidate)
+
     return candidate

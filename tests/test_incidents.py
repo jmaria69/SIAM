@@ -51,6 +51,28 @@ def test_overview_reports_open_alerts_and_risk(client):
     assert overview["eventos_ultimo_minuto"] >= 1
 
 
+def test_notifies_again_only_when_severity_escalates(client, monkeypatch):
+    """siem/correlation.py::correlate_event: la primera creación siempre
+    notifica; un evento correlacionado que NO sube la severidad no debe
+    repetir el aviso (ruido); uno que SÍ la sube (media -> crítica) debe
+    disparar un segundo aviso — el escenario reportado como "hubo más
+    actividad y no llegó nada"."""
+    llamadas = []
+    monkeypatch.setattr(
+        "siem.correlation.notificar_incidente",
+        lambda settings, incident: llamadas.append(incident.severity.value),
+    )
+
+    _ingest_event(client, asset_name="web-prod-01", severity="media", summary="Evento 1")
+    assert llamadas == ["media"]
+
+    _ingest_event(client, asset_name="web-prod-01", severity="baja", summary="Evento 2 (no escala)")
+    assert llamadas == ["media"]
+
+    _ingest_event(client, asset_name="web-prod-01", severity="critica", summary="Evento 3 (escala)")
+    assert llamadas == ["media", "critica"]
+
+
 def test_incident_status_update(client):
     _ingest_event(client)
     incident_id = client.get("/v1/incidents").json()[0]["id"]

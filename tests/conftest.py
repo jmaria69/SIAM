@@ -13,6 +13,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import siem.correlation as correlation
 from siem.config import Settings, get_settings
 from siem.database import Base, get_db
 from siem.main import app
@@ -55,10 +56,26 @@ def _override_get_settings() -> Settings:
     # de verdad en .env, sin este override los tests de campañas
     # intentarían enviar emails reales en cada `pytest`. Se fuerza a None
     # aquí para que la aislación no dependa de que .env esté vacío.
-    return Settings(AI_PROVIDER="none", SMTP_HOST=None)
+    #
+    # ALERT_EMAIL_TO (alerta de incidente nuevo, siem/notifications.py)
+    # sigue el mismo criterio: se fuerza a None aunque el .env real lo
+    # tenga configurado.
+    return Settings(AI_PROVIDER="none", SMTP_HOST=None, ALERT_EMAIL_TO=None)
 
 
 app.dependency_overrides[get_settings] = _override_get_settings
+
+
+@pytest.fixture(autouse=True)
+def _isolate_correlation_settings(monkeypatch):
+    # siem/correlation.py::correlate_event llama a get_settings() DIRECTAMENTE
+    # (no vía Depends), así que dependency_overrides de arriba no lo cubre --
+    # sin este parche, cada test que crea un incidente (la mayoría de
+    # test_incidents.py, test_threat_detection.py, test_killchain.py...)
+    # leería el .env real y, con SMTP + ALERT_EMAIL_TO configurados de
+    # verdad, dispararía un envío de email real por Hostinger en cada
+    # `pytest`.
+    monkeypatch.setattr(correlation, "get_settings", _override_get_settings)
 
 
 @pytest.fixture(autouse=True)

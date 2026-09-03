@@ -13,8 +13,11 @@ import smtplib
 from email.mime.text import MIMEText
 
 from siem.config import Settings
+from siem.models import Incident, Severity
 
 logger = logging.getLogger("siem.notifications")
+
+_SEVERITY_ORDER = [Severity.INFO, Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL]
 
 
 def enviar_email(settings: Settings, destinatario: str, asunto: str, cuerpo_html: str) -> bool:
@@ -53,3 +56,33 @@ def enviar_email(settings: Settings, destinatario: str, asunto: str, cuerpo_html
     except Exception:
         logger.exception("Fallo enviando email a %s", destinatario)
         return False
+
+
+def notificar_incidente(settings: Settings, incident: Incident) -> bool:
+    """Alerta por email al SOC. `siem/correlation.py::correlate_event` la
+    llama en dos momentos: al crear un incidente NUEVO, y de nuevo si un
+    evento correlacionado contra uno ya abierto hace ESCALAR su severidad
+    (p.ej. media -> crítica). No se repite por cada evento que se limita a
+    sumarse sin cambiar la severidad -- eso sería ruido, no información
+    nueva para el SOC.
+
+    Se omite en silencio si ALERT_EMAIL_TO no está en .env o si la
+    severidad no alcanza ALERT_EMAIL_MIN_SEVERITY -- misma filosofía que
+    `enviar_email`: nunca debe tumbar la ingesta/correlación de eventos.
+    """
+    if not settings.ALERT_EMAIL_TO:
+        return False
+    umbral = Severity(settings.ALERT_EMAIL_MIN_SEVERITY)
+    if _SEVERITY_ORDER.index(incident.severity) < _SEVERITY_ORDER.index(umbral):
+        return False
+
+    asunto = f"[SIAM] Incidente {incident.severity.value.upper()} — {incident.title}"
+    cuerpo = (
+        f"<h2>{incident.title}</h2>"
+        f"<p><b>ID:</b> {incident.id}<br>"
+        f"<b>Severidad:</b> {incident.severity.value}<br>"
+        f"<b>Riesgo:</b> {incident.risk_score}/100<br>"
+        f"<b>Activos afectados:</b> {', '.join(incident.affected_assets) or '—'}</p>"
+        f"<p>{incident.description}</p>"
+    )
+    return enviar_email(settings, settings.ALERT_EMAIL_TO, asunto, cuerpo)

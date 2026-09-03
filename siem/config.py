@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     SMTP_FROM: Optional[str] = None
     SMTP_USE_TLS: bool = True
 
+    # Alerta por email cuando se crea un incidente nuevo (ataque detectado).
+    # Reutiliza el mismo SMTP de arriba -- es otro tipo de correo, no otro
+    # servidor. Sin ALERT_EMAIL_TO no se envía nada (mismo criterio: una
+    # integración opcional nunca debe tumbar la ingesta/correlación de
+    # eventos). ALERT_EMAIL_MIN_SEVERITY filtra ruido de incidentes leves.
+    ALERT_EMAIL_TO: Optional[str] = None
+    ALERT_EMAIL_MIN_SEVERITY: Literal["info", "baja", "media", "alta", "critica"] = "media"
+
     # Base para construir los enlaces de tracking (clic/reporte/confirmación
     # de lectura) que se incrustan en el contenido de cada campaña.
     CAMPAIGN_BASE_URL: str = "http://localhost:8001"
