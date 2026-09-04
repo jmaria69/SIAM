@@ -98,6 +98,12 @@ class Settings(BaseSettings):
     # de 5 min da margen holgado y cursor-free (deduplicación por rayId).
     CLOUDFLARE_LOOKBACK_MINUTES: int = 10
 
+    # Módulo premium opcional (Collector/Analyzer los reutiliza del WAAP de
+    # arriba -- ver siem/active_defense.py). Solo añade agrupación por
+    # atacante/campaña + Response Engine simulado. False por defecto: se
+    # activa por cliente cuando contrata el add-on.
+    PRAXIA_ACTIVE_DEFENSE_ENABLED: bool = False
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

@@ -13,6 +13,7 @@ from siem.config import Settings, settings as default_settings
 from siem.database import Base, engine, run_light_migrations
 from siem.ingest.cloudflare_scheduler import run_cloudflare_pull_loop
 from siem.router.api import router as tickets_router
+from siem.router.active_defense import router as active_defense_router
 from siem.router.ai import router as ai_router
 from siem.router.automation import router as automation_router
 from siem.router.campaigns import router as campaigns_router
@@ -189,6 +190,7 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     app.include_router(campaigns_router)  # /v1/campaigns/* (campañas de concienciación)
     app.include_router(threats_router)  # /v1/threats/* (catálogo de 30 amenazas + detección)
     app.include_router(waf_router)  # /v1/ingest/waf (WAAP hibrido: Cloudflare + Coraza)
+    app.include_router(active_defense_router)  # /v1/active-defense/* (módulo premium, ver active_defense.py)
     app.include_router(pyme_router)  # /v1/pyme/* (Ciberseguridad PYME - PDFs del curso)
 
     return app

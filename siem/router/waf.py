@@ -105,7 +105,12 @@ def _to_event(waf: WafEvent) -> Event:
     """Traduce el evento WAF al `Event` interno. Las keywords para
     detect_threats viven en `event_type` + `summary` + `description`, así
     que se incluye la categoría del ataque y el mensaje de regla ahí --
-    NO en raw_payload, que detect_threats no mira."""
+    NO en raw_payload, que detect_threats no mira.
+
+    client_ip/country/asn/attack_category SÍ se guardan en raw_payload
+    (además de en el summary/description de texto libre) -- es lo que lee
+    siem/active_defense.py para agrupar por atacante/campaña. waf.raw es el
+    payload crudo del vendor y no garantiza estos nombres de campo."""
 
     if waf.severity_hint is not None:
         severity = Severity(waf.severity_hint)
@@ -145,7 +150,14 @@ def _to_event(waf: WafEvent) -> Event:
         summary=summary or f"WAF {waf.action} en {host}",
         description=description,
         timestamp=waf.occurred_at or datetime.utcnow(),
-        raw_payload=waf.raw,
+        raw_payload={
+            **waf.raw,
+            "client_ip": waf.client_ip,
+            "country": waf.country,
+            "asn": waf.asn,
+            "attack_category": waf.attack_category,
+            "action": waf.action,
+        },
     )
 
 
