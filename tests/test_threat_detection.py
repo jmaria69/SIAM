@@ -80,6 +80,32 @@ def test_catalog_has_thirty_entries_with_unique_ids():
     assert len(ids) == len(set(ids))
 
 
+def test_waf_rce_block_gets_threat_id():
+    """Regresión 2026-09-04: siem/ingest/cloudflare.py clasifica categoría
+    "rce", pero el catálogo no tenía ninguna entrada que casara -- todo
+    bloqueo RCE real se quedaba sin threat_ids y por tanto sin kill-chain."""
+    event = Event(
+        source="waf-cloudflare",
+        event_type="waf.block.rce",
+        summary="WAF BLOCK POST /api/auth/signin desde 45.148.10.13 (NL)",
+        description="React - RCE - CVE:CVE-2025-55182 | Categoría: rce",
+    )
+    assert 33 in detect_threats(event)
+
+
+def test_waf_scanner_category_matches_scanning_entry():
+    """Regresión 2026-09-04: siem/ingest/cloudflare.py produce categoría
+    "scanner" (botFight/bic/hot), pero el keyword era "scanning" -- nunca
+    substring de "scanner", así que nunca casaba."""
+    event = Event(source="waf-cloudflare", event_type="waf.block.scanner", summary="WAF BLOCK")
+    assert 31 in detect_threats(event)
+
+
+def test_waf_sensitive_file_scan_matches_lfi_entry():
+    event = Event(source="waf-cloudflare", event_type="waf.block.generic", summary="WAF BLOCK GET /wp-config.php desde 1.2.3.4")
+    assert 32 in detect_threats(event)
+
+
 # ---------------------------------------------------------------------------
 # Integración: ingesta real -> correlación -> incidente con threat_ids
 # ---------------------------------------------------------------------------

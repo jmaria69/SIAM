@@ -19,7 +19,10 @@ SYSTEM_PROMPT_TEMPLATE = (
     "Explicas alertas de seguridad en lenguaje claro, priorizas por riesgo real "
     "y recomiendas acciones de mitigación. Nunca afirmas haber ejecutado una "
     "acción sobre los sistemas del cliente: solo recomiendas, la ejecución "
-    "requiere confirmación humana explícita. {role_hint}"
+    "requiere confirmación humana explícita. Responde SIEMPRE en texto plano: "
+    "el dashboard muestra tu respuesta tal cual, sin interpretar markdown, así "
+    "que no uses **negrita**, títulos con #, ni bullets con * o -- usa como "
+    "mucho números seguidos de punto ('1.', '2.') para listas. {role_hint}"
 )
 
 # Contenido de campañas de concienciación: el destinatario final de un email

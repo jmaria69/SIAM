@@ -306,7 +306,12 @@ THREATS_CATALOG: list[ThreatEntry] = [
         "definicion": "Sondeos automáticos de puertos, rutas o vulnerabilidades desde bots o herramientas de reconocimiento (nikto, sqlmap, nmap, scanners de vulnerabilidades) antes de un ataque real. Un WAAP los detecta por firma del cliente, patrones de URL probadas y volumen.",
         "riesgo": "Fase previa a la explotación: si se ignora, el atacante mapea la superficie de ataque y vuelve con un exploit dirigido. También revela credenciales y endpoints ocultos que el sitio no debía exponer.",
         "prevencion": "Bot Management en la capa cloud (Cloudflare Bot Fight Mode o similar), reglas de rate limiting por IP/ASN, y bloqueo de user-agents de herramientas conocidas en el WAAP on-prem.",
-        "keywords": ["scanning", "escaneo activo", "sqlmap", "nikto", "nmap", "bot malicioso", "reconocimiento", "vulnerability scanner", "bad bot", "crawler malicioso"],
+        # "scanner" (sin "-ing") añadido 2026-09-04: es el valor literal que
+        # produce siem/ingest/cloudflare.py::_SOURCE_TO_CATEGORY para
+        # botFight/bic/hot -- "scanning" nunca es substring de "scanner", así
+        # que ninguna detección de bot/escáner de Cloudflare casaba con esta
+        # entrada y el kill-chain salía vacío para ese tráfico.
+        "keywords": ["scanning", "scanner", "escaneo activo", "sqlmap", "nikto", "nmap", "bot malicioso", "reconocimiento", "vulnerability scanner", "bad bot", "crawler malicioso"],
     },
     {
         "id": 32,
@@ -314,7 +319,27 @@ THREATS_CATALOG: list[ThreatEntry] = [
         "definicion": "Manipulación de rutas en peticiones HTTP con secuencias tipo `../../etc/passwd` o rutas absolutas para leer ficheros del servidor fuera del directorio permitido, o incluir código remoto en el flujo de la app.",
         "riesgo": "Lectura de ficheros sensibles del servidor (configuración, claves, código fuente) sin necesidad de autenticación, y en RFI ejecución de código controlado por el atacante.",
         "prevencion": "Validar y canonicalizar rutas en el servidor, deshabilitar `allow_url_include` en PHP, y habilitar las reglas OWASP CRS 930xxx (LFI) y 931xxx (RFI) en el WAAP.",
-        "keywords": ["path traversal", "directory traversal", "lfi", "local file inclusion", "rfi", "remote file inclusion", "../", "etc/passwd", "traversal"],
+        # Rutas de disclosure de ficheros sensibles añadidas 2026-09-04: son
+        # el grueso real del tráfico WAF bloqueado (wp-config.php, .env,
+        # .git/HEAD, claves SSH/AWS...) y encajan con la definición de esta
+        # entrada, pero no casaban con ningún keyword existente -- el summary
+        # del evento SÍ incluye la ruta (waf.py::_to_event), así que basta con
+        # sumarlas aquí sin tocar el clasificador.
+        "keywords": ["path traversal", "directory traversal", "lfi", "local file inclusion", "rfi", "remote file inclusion", "../", "etc/passwd", "traversal", "wp-config", ".env", ".git/head", ".ssh/authorized_keys", ".aws/credentials", "key.json", "values.yaml", ".swp", ".swo", "@fs/"],
+    },
+    {
+        "id": 33,
+        "nombre": "Ejecución remota de código (RCE)",
+        "definicion": "Explotación de una vulnerabilidad (a menudo con CVE público) que permite al atacante ejecutar comandos o código arbitrario en el servidor a través de una petición HTTP manipulada -- deserialización insegura, inyección de comandos, plantillas server-side, etc.",
+        "riesgo": "El impacto más alto de los ataques web: control total del proceso/servidor, no solo lectura de datos. Suele ser el paso previo a instalar un backdoor o moverse lateralmente.",
+        "prevencion": "Parchear con prioridad cualquier CVE de RCE conocido en el stack, WAF con reglas OWASP CRS 932xxx/933xxx activas, y ejecutar la aplicación con el mínimo privilegio posible para limitar el impacto si la explotación tiene éxito.",
+        # Añadida 2026-09-04: siem/ingest/cloudflare.py ya clasificaba ataques
+        # como categoría "rce" (keywords "remote code execution"/"command
+        # injection" en la descripción de Cloudflare) desde que se incorporó
+        # el WAF, pero nunca hubo entrada de catálogo que lo recogiera -- todo
+        # bloqueo de RCE real (el caso más grave) se quedaba sin threat_id y
+        # por tanto sin paso en el kill-chain.
+        "keywords": ["rce", "remote code execution", "ejecucion remota de codigo", "ejecución remota de código", "command injection", "inyeccion de comandos", "inyección de comandos", "deserialization", "deserializacion insegura", "cve:", "ssti", "server-side template injection"],
     },
 ]
 
@@ -414,6 +439,7 @@ _MITRE_RAW: dict[int, tuple[str, str, str]] = {
     30: ("TA0040", "T1498",       "Denegación de servicio de red (botnet IoT)"),
     31: ("TA0007", "T1595",       "Escaneo activo (reconocimiento)"),
     32: ("TA0001", "T1190",       "Explotación de aplicación pública (LFI/RFI)"),
+    33: ("TA0001", "T1190",       "Explotación de aplicación pública (RCE)"),
 }
 
 # Inyecta los campos MITRE en cada entrada del catálogo. Si en algún momento
