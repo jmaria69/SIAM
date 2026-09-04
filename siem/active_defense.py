@@ -7,9 +7,13 @@ para venderlo como bloque aparte -- agrupar eventos WAF por atacante/
 campaña y decidir una respuesta sugerida. client_ip/país/asn/categoría ya
 viajan en Event.raw_payload desde waf.py::_to_event.
 
-Response Engine simulado a propósito (mismo criterio que
-siem/router/automation.py): no hay conector real a la API de Cloudflare
-todavía -- eso es fase 2, ver docs/ARQUITECTURA.md.
+Este módulo solo decide QUÉ acción sugerir (suggest_response, determinista
+por severidad) y agrupa atacantes/campañas -- la ejecución real contra
+Cloudflare (fase 2, ya implementada) vive en siem/router/active_defense.py +
+siem/cloudflare_firewall.py. Si no hay CLOUDFLARE_API_TOKEN/ZONE_ID
+configurados, el router cae de vuelta a simulado (mismo criterio que
+siem/router/automation.py): una integración opcional nunca debe tumbar el
+endpoint.
 """
 from collections import defaultdict
 
@@ -47,8 +51,20 @@ def compute_threat_score(events: list[Event]) -> int:
     return min(100, sum(SEVERITY_WEIGHT.get(e.severity, 5) for e in events))
 
 
-def list_attackers(events: list[Event]) -> list[dict]:
-    """Agrupa eventos WAF por IP de origen."""
+def list_attackers(
+    events: list[Event],
+    blocked_ips: set[str] | None = None,
+    whitelisted_ips: set[str] | None = None,
+) -> list[dict]:
+    """Agrupa eventos WAF por IP de origen.
+
+    `blocked_ips`/`whitelisted_ips` los calcula el router cruzando
+    store.list_iocs() (bloqueos confirmados vía /respond) y
+    store.list_whitelist() -- así el dashboard puede pintar si un atacante
+    está realmente bloqueado en vez de solo "sugerido"."""
+    blocked_ips = blocked_ips or set()
+    whitelisted_ips = whitelisted_ips or set()
+
     by_ip: dict[str, list[Event]] = defaultdict(list)
     for e in events:
         if e.source not in WAF_SOURCES:
@@ -65,17 +81,36 @@ def list_attackers(events: list[Event]) -> list[dict]:
         categories = sorted({
             e.raw_payload.get("attack_category") for e in evs if e.raw_payload.get("attack_category")
         })
+
+        if ip in whitelisted_ips:
+            status = "lista_blanca"
+        elif ip in blocked_ips:
+            status = "bloqueada"
+        else:
+            status = "activa"
+
         attackers.append({
             "ip": ip,
             "country": last.raw_payload.get("country"),
             "asn": last.raw_payload.get("asn"),
+            "asn_org": last.raw_payload.get("asn_org"),
             "event_count": len(evs),
             "attack_categories": categories,
             "max_severity": max_sev.value,
             "threat_score": compute_threat_score(evs),
             "suggested_action": suggest_response(max_sev),
+            "status": status,
             "first_seen": evs[0].timestamp,
             "last_seen": last.timestamp,
+            # Huella del atacante -- lo más cercano a "identidad" que existe
+            # de verdad para tráfico remoto (ver comentario en waf.py sobre
+            # por qué no hay MAC). Se toma del evento más reciente. JA3/JA4,
+            # bot score y WAF attack score se probaron y se descartaron: son
+            # de planes de pago que esta zona no tiene (ver waf.py).
+            "last_host": last.raw_payload.get("host"),
+            "last_uri": last.raw_payload.get("uri"),
+            "last_user_agent": last.raw_payload.get("user_agent"),
+            "referer_host": last.raw_payload.get("referer_host"),
         })
     attackers.sort(key=lambda a: a["threat_score"], reverse=True)
     return attackers

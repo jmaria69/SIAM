@@ -128,6 +128,30 @@ class IOC(BaseModel):
     campaign: Optional[str] = None
     ttps: List[str] = Field(default_factory=list)  # p.ej. MITRE ATT&CK IDs
     confidence: str = "media"  # baja, media, alta
+    # Id de la IP Access Rule real en Cloudflare cuando este IOC viene de un
+    # bloqueo confirmado por Praxia Active Defense con conector real (ver
+    # siem/cloudflare_firewall.py) -- None si es simulado o añadido a mano.
+    cf_rule_id: Optional[str] = None
+    # Acción de Active Defense que generó esta entrada (BLOCK/RATE_LIMIT/
+    # CHALLENGE/HONEYPOT, ver siem/active_defense.py::RESPONSE_ACTIONS).
+    # "BLOCK" por defecto porque las entradas añadidas a mano vía POST
+    # /blacklist siempre crean (o intentan crear) un bloqueo real, igual que
+    # antes de que existiera este campo. RATE_LIMIT y HONEYPOT lo usan para
+    # saber qué IPs debe incluir la regla compartida de Cloudflare (una sola
+    # regla de rate limiting / redirect por zona, no una por IP -- ver
+    # siem/cloudflare_firewall.py::sync_rate_limit_rule / sync_honeypot_rule).
+    action: str = "BLOCK"
+
+
+class WhitelistEntry(BaseModel):
+    """IP que Active Defense nunca debe bloquear (ver siem/router/
+    active_defense.py::respond) -- p.ej. la propia IP del equipo, un
+    proveedor o un escáner de seguridad contratado que si no dispara
+    falsos positivos en el WAF."""
+    id: str = Field(default_factory=lambda: f"WL-{uuid.uuid4().hex[:8]}")
+    ip: str
+    reason: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------

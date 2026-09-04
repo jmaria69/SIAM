@@ -19,7 +19,16 @@ from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from siem.database import get_db
-from siem.db_models import AssetDB, AutomationRuleDB, CampaignDB, EventDB, IOCDB, IncidentDB, ReportDB
+from siem.db_models import (
+    AssetDB,
+    AutomationRuleDB,
+    CampaignDB,
+    EventDB,
+    IOCDB,
+    IncidentDB,
+    ReportDB,
+    WhitelistDB,
+)
 from siem.models import (
     Asset,
     AutomationRule,
@@ -31,6 +40,7 @@ from siem.models import (
     Incident,
     Report,
     TimelineEntry,
+    WhitelistEntry,
 )
 
 GRANULARITY_FORMAT = {
@@ -124,11 +134,19 @@ def _row_to_incident(row: IncidentDB) -> Incident:
 
 
 def _ioc_to_row(ioc: IOC) -> IOCDB:
-    return IOCDB(id=ioc.id, type=ioc.type, value=ioc.value, campaign=ioc.campaign, ttps=ioc.ttps, confidence=ioc.confidence)
+    return IOCDB(id=ioc.id, type=ioc.type, value=ioc.value, campaign=ioc.campaign, ttps=ioc.ttps, confidence=ioc.confidence, cf_rule_id=ioc.cf_rule_id, action=ioc.action)
 
 
 def _row_to_ioc(row: IOCDB) -> IOC:
-    return IOC(id=row.id, type=row.type, value=row.value, campaign=row.campaign, ttps=row.ttps or [], confidence=row.confidence)
+    return IOC(id=row.id, type=row.type, value=row.value, campaign=row.campaign, ttps=row.ttps or [], confidence=row.confidence, cf_rule_id=row.cf_rule_id, action=row.action or "BLOCK")
+
+
+def _whitelist_to_row(entry: WhitelistEntry) -> WhitelistDB:
+    return WhitelistDB(id=entry.id, ip=entry.ip, reason=entry.reason, created_at=entry.created_at)
+
+
+def _row_to_whitelist(row: WhitelistDB) -> WhitelistEntry:
+    return WhitelistEntry(id=row.id, ip=row.ip, reason=row.reason, created_at=row.created_at)
 
 
 def _rule_to_row(rule: AutomationRule) -> AutomationRuleDB:
@@ -279,6 +297,35 @@ class SiemStore:
 
     def list_iocs(self) -> List[IOC]:
         return [_row_to_ioc(r) for r in self.db.query(IOCDB).all()]
+
+    def get_ioc(self, ioc_id: str) -> Optional[IOC]:
+        row = self.db.get(IOCDB, ioc_id)
+        return _row_to_ioc(row) if row else None
+
+    def remove_ioc(self, ioc_id: str) -> bool:
+        row = self.db.get(IOCDB, ioc_id)
+        if row is None:
+            return False
+        self.db.delete(row)
+        self.db.commit()
+        return True
+
+    # -- Whitelist (IPs que Active Defense nunca debe bloquear) --------------------
+    def add_whitelist_entry(self, entry: WhitelistEntry) -> WhitelistEntry:
+        self.db.add(_whitelist_to_row(entry))
+        self.db.commit()
+        return entry
+
+    def list_whitelist(self) -> List[WhitelistEntry]:
+        return [_row_to_whitelist(r) for r in self.db.query(WhitelistDB).all()]
+
+    def remove_whitelist_entry(self, entry_id: str) -> bool:
+        row = self.db.get(WhitelistDB, entry_id)
+        if row is None:
+            return False
+        self.db.delete(row)
+        self.db.commit()
+        return True
 
     # -- Automation rules --------------------------------------------------------
     def add_rule(self, rule: AutomationRule) -> AutomationRule:

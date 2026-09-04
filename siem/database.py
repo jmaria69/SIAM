@@ -61,6 +61,21 @@ def run_light_migrations(bind_engine=None) -> None:
         # resueltos a partir de ahora, el PATCH pone el valor exacto, así que
         # este UPDATE queda en no-op en arranques siguientes.
         "UPDATE incidents SET resolved_at = updated_at WHERE status = 'resuelto' AND resolved_at IS NULL",
+        # 2026-09-04: conector real de Praxia Active Defense -- guarda el id
+        # de la IP Access Rule creada de verdad en Cloudflare para poder
+        # deshacer el bloqueo (DELETE /blacklist/{id}) sin dejar la regla
+        # huérfana en el firewall real. NULL para bloqueos simulados (sin
+        # CLOUDFLARE_API_TOKEN de escritura) o IOCs añadidos a mano.
+        "ALTER TABLE iocs ADD COLUMN cf_rule_id VARCHAR",
+        # 2026-09-04: qué acción de Active Defense generó esta entrada
+        # (BLOCK/RATE_LIMIT/CHALLENGE/HONEYPOT) -- antes de este campo todas
+        # las entradas eran implícitamente bloqueos. Backfill a 'BLOCK' para
+        # que las filas ya existentes (todas creadas antes de que
+        # RATE_LIMIT/HONEYPOT tuvieran conector real) no queden con action
+        # NULL y se cuelen sin querer en la regla compartida de rate
+        # limiting/honeypot -- ver siem/cloudflare_firewall.py.
+        "ALTER TABLE iocs ADD COLUMN action VARCHAR DEFAULT 'BLOCK'",
+        "UPDATE iocs SET action = 'BLOCK' WHERE action IS NULL",
     ]
     with bind_engine.connect() as conn:
         for statement in statements:

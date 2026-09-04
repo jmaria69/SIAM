@@ -78,6 +78,16 @@ class IOCDB(Base):
     campaign = Column(String, nullable=True)
     ttps = Column(JSON, default=list)
     confidence = Column(String, default="media")
+    cf_rule_id = Column(String, nullable=True)
+    action = Column(String, default="BLOCK")
+
+
+class WhitelistDB(Base):
+    __tablename__ = "whitelist_entries"
+    id = Column(String, primary_key=True)
+    ip = Column(String, index=True)
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=dt.datetime.utcnow)
 
 
 class AutomationRuleDB(Base):

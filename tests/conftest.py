@@ -60,7 +60,22 @@ def _override_get_settings() -> Settings:
     # ALERT_EMAIL_TO (alerta de incidente nuevo, siem/notifications.py)
     # sigue el mismo criterio: se fuerza a None aunque el .env real lo
     # tenga configurado.
-    return Settings(AI_PROVIDER="none", SMTP_HOST=None, ALERT_EMAIL_TO=None)
+    #
+    # CLOUDFLARE_API_TOKEN / CLOUDFLARE_ZONE_ID (2026-09-04, conector real de
+    # Active Defense, siem/cloudflare_firewall.py): mismo criterio otra vez,
+    # y aquí el coste de un fallo es mucho peor que un LLM o un SMTP que se
+    # cuelgan -- sin este override, cualquier test que dispare /respond con
+    # BLOCK/CHALLENGE ejecuta una llamada de escritura DE VERDAD contra el
+    # firewall de producción (repro real 2026-09-04: test_respond_requires_
+    # confirmation_then_executes creó una IP Access Rule real para 9.9.9.9 en
+    # la zona de Cloudflare). Se fuerza a None aquí; los tests que necesitan
+    # el conector real lo activan explícitamente vía
+    # _enable_module_with_cloudflare() en tests/test_active_defense.py, con
+    # la llamada HTTP siempre mockeada.
+    return Settings(
+        AI_PROVIDER="none", SMTP_HOST=None, ALERT_EMAIL_TO=None,
+        CLOUDFLARE_API_TOKEN=None, CLOUDFLARE_ZONE_ID=None,
+    )
 
 
 app.dependency_overrides[get_settings] = _override_get_settings
