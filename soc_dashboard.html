@@ -1865,8 +1865,7 @@ function PymeCybersecurityPanel() {
   return (
     <div className="p-4 space-y-4">
       <div className="bg-gradient-to-r from-violet-900/60 to-indigo-900/60 border border-violet-700/50 rounded-xl p-5">
-        <h2 className="text-lg font-bold text-white mb-1">🏛️ Ciberseguridad PYME — Aplicación Práctica del Curso</h2>
-        <p className="text-sm text-slate-400">Integración de las 18 Unidades Didácticas: Plan Director · Riesgos · Backup · Ataques · Auditoría ISO 27001 / RGPD</p>
+        <h2 className="text-lg font-bold text-white mb-1">🏛️ Ciberseguridad PYME</h2>
       </div>
       <div className="flex flex-wrap gap-2">
         {sections.map(s => (
@@ -1883,10 +1882,21 @@ function PymeCybersecurityPanel() {
 
 
 const RESPONSE_ACTION_LABEL = { BLOCK: 'Bloquear', RATE_LIMIT: 'Limitar tráfico', CHALLENGE: 'Retar (CAPTCHA)', HONEYPOT: 'Honeypot' };
+const STATUS_STYLE = {
+  bloqueada: 'bg-emerald-950 text-emerald-300 border border-emerald-800',
+  lista_blanca: 'bg-slate-800 text-slate-300 border border-slate-700',
+  activa: 'bg-rose-950 text-rose-300 border border-rose-800',
+};
+const ATTACKER_STATUS_LABEL = { bloqueada: '● Bloqueada', lista_blanca: '○ Lista blanca', activa: '● Activa' };
 
 function ActiveDefensePanel() {
   const [overview, setOverview] = useState(null);
   const [responding, setResponding] = useState(null); // ip en curso, para desactivar botones
+  const [expanded, setExpanded] = useState(null); // ip con detalle de huella abierto
+  const [whitelist, setWhitelist] = useState([]);
+  const [blacklist, setBlacklist] = useState([]);
+  const [newWlIp, setNewWlIp] = useState('');
+  const [newWlReason, setNewWlReason] = useState('');
 
   async function load() {
     try {
@@ -1895,8 +1905,20 @@ function ActiveDefensePanel() {
     } catch (err) { console.error(err); }
   }
 
+  async function loadLists() {
+    try {
+      const [wl, bl] = await Promise.all([
+        fetch('/v1/active-defense/whitelist'),
+        fetch('/v1/active-defense/blacklist'),
+      ]);
+      if (wl.ok) setWhitelist(await wl.json());
+      if (bl.ok) setBlacklist(await bl.json());
+    } catch (err) { console.error(err); }
+  }
+
   useEffect(() => {
     load();
+    loadLists();
     const id = setInterval(load, 5000);
     return () => clearInterval(id);
   }, []);
@@ -1905,9 +1927,31 @@ function ActiveDefensePanel() {
     if (!window.confirm(`¿Ejecutar "${RESPONSE_ACTION_LABEL[action]}" sobre ${ip}? Esta acción queda registrada como IOC confirmado.`)) return;
     setResponding(ip);
     try {
-      await fetch(`/v1/active-defense/respond?ip=${encodeURIComponent(ip)}&action=${action}&confirm=true`, { method: 'POST' });
-      await load();
+      const res = await fetch(`/v1/active-defense/respond?ip=${encodeURIComponent(ip)}&action=${action}&confirm=true`, { method: 'POST' });
+      if (!res.ok) { const body = await res.json().catch(() => ({})); window.alert(body.detail || 'No se pudo ejecutar la acción.'); }
+      await Promise.all([load(), loadLists()]);
     } finally { setResponding(null); }
+  }
+
+  async function addWhitelist(e) {
+    e.preventDefault();
+    if (!newWlIp.trim()) return;
+    await fetch('/v1/active-defense/whitelist', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip: newWlIp.trim(), reason: newWlReason.trim() || null }),
+    });
+    setNewWlIp(''); setNewWlReason('');
+    await loadLists();
+  }
+
+  async function removeWhitelist(id) {
+    await fetch(`/v1/active-defense/whitelist/${id}`, { method: 'DELETE' });
+    await loadLists();
+  }
+
+  async function removeBlacklist(id) {
+    await fetch(`/v1/active-defense/blacklist/${id}`, { method: 'DELETE' });
+    await Promise.all([load(), loadLists()]);
   }
 
   if (!overview) return <div className="text-slate-500 italic p-6">Cargando...</div>;
@@ -1915,7 +1959,7 @@ function ActiveDefensePanel() {
   return (
     <div>
       <div className="bg-blue-950 border border-blue-800 text-blue-200 text-xs rounded-lg px-4 py-2 mb-6">
-        ⚔️ Módulo premium — Response Engine simulado (BLOCK/RATE LIMIT/CHALLENGE/HONEYPOT) sobre el WAAP híbrido (Cloudflare + Coraza). Sin conector real todavía.
+        ⚔️ Módulo premium — Response Engine sobre el WAAP híbrido (Cloudflare + Coraza). BLOCK/CHALLENGE/HONEYPOT se ejecutan de verdad en Cloudflare si hay token configurado: BLOCK/CHALLENGE crean una IP Access Rule por IP; HONEYPOT actualiza una regla compartida por zona que redirige al atacante a un panel señuelo del propio SIAM. RATE LIMIT se queda simulado: el plan actual de Cloudflare no permite filtrar una regla de rate limiting por IP (hace falta plan Business o superior). En todos los casos, cada acción confirmada queda registrada como IOC (lista negra) y se refleja aquí como "Bloqueada".
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -1945,27 +1989,82 @@ function ActiveDefensePanel() {
         <>
           <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg overflow-hidden mb-6">
             <h2 className="text-lg font-semibold p-4 pb-0">Atacantes</h2>
-            <div className="hidden sm:grid sm:grid-cols-6 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 px-4 py-2 mt-3 items-center">
-              <div>IP</div><div>País / ASN</div><div>Eventos</div><div>Severidad</div><div>Sugerido</div><div>Acción</div>
+            <div className="hidden sm:grid sm:grid-cols-7 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 px-4 py-2 mt-3 items-center">
+              <div>IP</div><div>País / ASN</div><div>Eventos</div><div>Severidad</div><div>Estado</div><div>Sugerido</div><div>Acción</div>
             </div>
-            {overview.attackers.map((a) => (
-              <div key={a.ip} className="flex flex-col gap-2 sm:grid sm:grid-cols-6 sm:gap-2 sm:items-center border-b border-slate-900 px-4 py-3 text-sm">
-                <div className="font-mono">{a.ip}</div>
-                <div className="text-slate-400 text-xs">{a.country || '—'} {a.asn ? `· ${a.asn}` : ''}</div>
-                <div>{a.event_count}</div>
-                <div><span className={`px-1.5 py-0.5 rounded text-xs ${SEVERITY_STYLE[a.max_severity] || ''}`}>{a.max_severity}</span></div>
-                <div className="text-xs text-slate-400">{RESPONSE_ACTION_LABEL[a.suggested_action]}</div>
-                <div className="flex flex-wrap gap-1">
-                  {['BLOCK', 'RATE_LIMIT', 'CHALLENGE', 'HONEYPOT'].map((action) => (
-                    <button key={action} disabled={responding === a.ip} onClick={() => responder(a.ip, action)}
-                      className={`text-xs px-2 py-1 rounded border disabled:opacity-50 ${action === a.suggested_action ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-700 hover:bg-slate-800'}`}>
-                      {RESPONSE_ACTION_LABEL[action]}
-                    </button>
-                  ))}
+            {overview.attackers.map((a) => {
+              const isWhitelisted = a.status === 'lista_blanca';
+              const isOpen = expanded === a.ip;
+              return (
+              <div key={a.ip} className="border-b border-slate-900">
+                <div className="flex flex-col gap-2 sm:grid sm:grid-cols-7 sm:gap-2 sm:items-center px-4 py-3 text-sm">
+                  <button className="font-mono text-left hover:underline decoration-dotted" onClick={() => setExpanded(isOpen ? null : a.ip)} title="Ver huella del atacante">
+                    {a.ip}
+                  </button>
+                  <div className="text-slate-400 text-xs">{a.country || '—'} {a.asn ? `· ${a.asn}` : ''}</div>
+                  <div>{a.event_count}</div>
+                  <div><span className={`px-1.5 py-0.5 rounded text-xs ${SEVERITY_STYLE[a.max_severity] || ''}`}>{a.max_severity}</span></div>
+                  <div><span className={`px-1.5 py-0.5 rounded text-xs whitespace-nowrap ${STATUS_STYLE[a.status] || ''}`}>{ATTACKER_STATUS_LABEL[a.status] || a.status}</span></div>
+                  <div className="text-xs text-slate-400">{RESPONSE_ACTION_LABEL[a.suggested_action]}</div>
+                  <div className="flex flex-wrap gap-1">
+                    {isWhitelisted ? (
+                      <span className="text-xs text-slate-500 italic">en lista blanca</span>
+                    ) : ['BLOCK', 'RATE_LIMIT', 'CHALLENGE', 'HONEYPOT'].map((action) => (
+                      <button key={action} disabled={responding === a.ip} onClick={() => responder(a.ip, action)}
+                        className={`text-xs px-2 py-1 rounded border disabled:opacity-50 ${action === a.suggested_action ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-700 hover:bg-slate-800'}`}>
+                        {RESPONSE_ACTION_LABEL[action]}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+                {isOpen && (
+                  <div className="mx-4 mb-3 p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-slate-300">
+                    <div><span className="text-slate-500">Host / ruta atacada:</span> {a.last_host || '—'} {a.last_uri || ''}</div>
+                    <div><span className="text-slate-500">Organización ASN:</span> {a.asn_org || '—'}</div>
+                    <div><span className="text-slate-500">User-Agent:</span> {a.last_user_agent || '—'}</div>
+                    <div><span className="text-slate-500">Referer:</span> {a.referer_host || '—'}</div>
+                  </div>
+                )}
               </div>
-            ))}
+            );})}
           </div>
+
+          <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
+            <h2 className="text-lg font-semibold mb-3">Lista blanca (IPs que nunca se bloquean)</h2>
+            <form onSubmit={addWhitelist} className="flex flex-col sm:flex-row gap-2 mb-3">
+              <input value={newWlIp} onChange={(e) => setNewWlIp(e.target.value)} placeholder="IP (p.ej. 1.2.3.4)"
+                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm flex-1" />
+              <input value={newWlReason} onChange={(e) => setNewWlReason(e.target.value)} placeholder="Motivo (opcional)"
+                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm flex-1" />
+              <button type="submit" className="text-sm px-3 py-1 rounded bg-blue-600 hover:bg-blue-500">Añadir</button>
+            </form>
+            {whitelist.length === 0 ? (
+              <p className="text-slate-500 italic text-xs">Sin IPs en lista blanca.</p>
+            ) : (
+              <div className="space-y-1">
+                {whitelist.map((w) => (
+                  <div key={w.id} className="flex justify-between items-center text-sm border-b border-slate-900 pb-1">
+                    <span className="font-mono">{w.ip} <span className="text-slate-500 text-xs">{w.reason ? `— ${w.reason}` : ''}</span></span>
+                    <button onClick={() => removeWhitelist(w.id)} className="text-xs text-rose-400 hover:text-rose-300">Quitar</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {blacklist.length > 0 && (
+            <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
+              <h2 className="text-lg font-semibold mb-3">Lista negra (bloqueadas confirmadas)</h2>
+              <div className="space-y-1">
+                {blacklist.map((b) => (
+                  <div key={b.id} className="flex justify-between items-center text-sm border-b border-slate-900 pb-1">
+                    <span className="font-mono">{b.value} <span className="text-slate-500 text-xs">{b.campaign ? `— ${b.campaign}` : ''}</span></span>
+                    <button onClick={() => removeBlacklist(b.id)} className="text-xs text-rose-400 hover:text-rose-300">Desbloquear</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {overview.campaigns.length > 0 && (
             <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
