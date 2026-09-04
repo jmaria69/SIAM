@@ -47,7 +47,10 @@ def get_overview(store: SiemStore = Depends(get_store)) -> dict:
     return {
         "riesgo_global": calculate_global_risk(incidents),
         "activos_monitorizados": len(store.list_assets()),
-        "eventos_recientes": [e.model_dump() for e in events[:10]],
+        # Antes limitado a 10 -- el frontend (MonitoringPanel) ahora ofrece
+        # un selector 10/50/100 sobre esta misma lista, así que el backend
+        # debe entregar hasta 100 para que la opción no se quede coja.
+        "eventos_recientes": [e.model_dump() for e in events[:100]],
         "alertas_abiertas": len(open_incidents),
         "eventos_ultimo_minuto": store.eventos_ultimo_minuto(),
         "incidentes_por_severidad": {
