@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SIAM — Solicita una demo real</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0b0f1a;
+    color: #e6e9f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .card {
+    max-width: 480px;
+    width: 100%;
+    background: #111827;
+    border: 1px solid #1f2937;
+    border-radius: 12px;
+    padding: 32px;
+  }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p.sub { color: #9aa3b2; margin: 0 0 24px; font-size: 14px; line-height: 1.5; }
+  label { display: block; font-size: 13px; margin: 16px 0 6px; color: #c3c9d4; }
+  input, textarea {
+    width: 100%;
+    padding: 10px 12px;
+    background: #0b0f1a;
+    border: 1px solid #2a3344;
+    border-radius: 8px;
+    color: #e6e9f0;
+    font-size: 14px;
+  }
+  textarea { resize: vertical; min-height: 70px; }
+  button {
+    margin-top: 24px;
+    width: 100%;
+    padding: 12px;
+    background: #2563eb;
+    border: none;
+    border-radius: 8px;
+    color: white;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; cursor: default; }
+  #msg { margin-top: 16px; font-size: 14px; }
+  #msg.ok { color: #4ade80; }
+  #msg.err { color: #f87171; }
+  /* honeypot: oculto para humanos, visible para bots que rellenan todo */
+  .hp { position: absolute; left: -9999px; top: -9999px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Solicita una demo con datos reales</h1>
+    <p class="sub">
+      Esta demo pública muestra la propuesta de SIAM. Si quieres ver el SOC
+      funcionando con datos e incidentes reales, déjanos tus datos — te
+      contactamos para verificarlos y darte acceso temporal.
+    </p>
+    <form id="leadForm">
+      <label for="name">Nombre</label>
+      <input id="name" name="name" required maxlength="120">
+
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" required maxlength="200">
+
+      <label for="phone">Teléfono</label>
+      <input id="phone" name="phone" required maxlength="40">
+
+      <label for="company">Empresa (opcional)</label>
+      <input id="company" name="company" maxlength="120">
+
+      <label for="message">Mensaje (opcional)</label>
+      <textarea id="message" name="message" maxlength="500"></textarea>
+
+      <div class="hp">
+        <label for="website">Website</label>
+        <input id="website" name="website" tabindex="-1" autocomplete="off">
+      </div>
+
+      <button type="submit" id="submitBtn">Solicitar demo real</button>
+      <div id="msg"></div>
+    </form>
+  </div>
+
+<script>
+document.getElementById('leadForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('submitBtn');
+  const msg = document.getElementById('msg');
+  const form = e.target;
+  const payload = {
+    name: form.name.value.trim(),
+    email: form.email.value.trim(),
+    phone: form.phone.value.trim(),
+    company: form.company.value.trim() || null,
+    message: form.message.value.trim() || null,
+    website: form.website.value,
+  };
+  btn.disabled = true;
+  msg.className = '';
+  msg.textContent = '';
+  try {
+    const resp = await fetch('/demo/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) throw new Error('request_failed');
+    msg.className = 'ok';
+    msg.textContent = 'Recibido. Te contactamos en breve para darte acceso.';
+    form.reset();
+  } catch (err) {
+    msg.className = 'err';
+    msg.textContent = 'No se pudo enviar la solicitud. Inténtalo de nuevo en un momento.';
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -91,3 +91,15 @@ def _fresh_database():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.fixture
+def db_session():
+    """Sesión directa a la BD de test, para tests que necesitan comprobar
+    persistencia (p.ej. que un honeypot NO escribió fila) sin pasar por un
+    endpoint de lectura."""
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

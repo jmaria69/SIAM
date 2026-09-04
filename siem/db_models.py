@@ -100,6 +100,18 @@ class ReportDB(Base):
     content = Column(String)
 
 
+class DemoLeadDB(Base):
+    __tablename__ = "demo_leads"
+    id = Column(String, primary_key=True)
+    name = Column(String)
+    email = Column(String, index=True)
+    phone = Column(String)
+    company = Column(String, nullable=True)
+    message = Column(String, nullable=True)
+    created_at = Column(DateTime, default=dt.datetime.utcnow, index=True)
+    notified = Column(Boolean, default=False)  # si se pudo avisar por email a ALERT_EMAIL_TO
+
+
 class CampaignDB(Base):
     __tablename__ = "campaigns"
     id = Column(String, primary_key=True)

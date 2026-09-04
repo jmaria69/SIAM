@@ -21,6 +21,15 @@
 <style>body { margin: 0; }</style>
 </head>
 <body>
+<div id="demo-banner" style="display:none;position:sticky;top:0;z-index:9999;background:#7c3aed;color:#fff;padding:8px 16px;font:600 13px/1.4 system-ui,sans-serif;text-align:center;">
+  🧪 Estás viendo un dashboard de EJEMPLO con datos inventados —
+  <a href="/demo" style="color:#fff;text-decoration:underline;">solicita una demo con datos reales</a>
+</div>
+<script>
+  if (window.location.pathname.indexOf('/demo/dashboard') === 0) {
+    document.getElementById('demo-banner').style.display = 'block';
+  }
+</script>
 <div id="root"></div>
 <script>
 // Añadido 2026-09-03: todo /v1/* pasó a exigir la cabecera X-SIAM-API-Key
@@ -30,7 +39,14 @@
 // petición fetch("/v1/...") sin tocar los fetch() existentes uno a uno. Si
 // el backend responde 401 (clave ausente o incorrecta), se limpia y se
 // vuelve a pedir.
+//
+// Añadido 2026-09-04 (dashboard de ejemplo en /demo/dashboard, ver
+// siem/router/demo.py): esta misma página se sirve tal cual bajo esa ruta
+// pública para un visitante anónimo, así que en ese modo las llamadas se
+// reescriben hacia /demo/v1/... (una base de datos separada e inventada,
+// sin AI real) y NUNCA se pide la clave -- un prospecto no la tiene.
 (function () {
+  var IS_DEMO = window.location.pathname.indexOf('/demo/dashboard') === 0;
   var KEY_STORAGE = 'siam_api_key';
   function getKey() {
     var k = localStorage.getItem(KEY_STORAGE);
@@ -44,11 +60,16 @@
   window.fetch = function (input, init) {
     var url = typeof input === 'string' ? input : (input && input.url) || '';
     if (url.indexOf('/v1/') === 0) {
-      init = init || {};
-      init.headers = Object.assign({}, init.headers, { 'X-SIAM-API-Key': getKey() });
+      if (IS_DEMO) {
+        url = '/demo' + url;
+        input = url;
+      } else {
+        init = init || {};
+        init.headers = Object.assign({}, init.headers, { 'X-SIAM-API-Key': getKey() });
+      }
     }
     return originalFetch(input, init).then(function (res) {
-      if (res.status === 401 && url.indexOf('/v1/') === 0) {
+      if (res.status === 401 && url.indexOf('/v1/') === 0 && !IS_DEMO) {
         localStorage.removeItem(KEY_STORAGE);
       }
       return res;

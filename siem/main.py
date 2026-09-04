@@ -1,11 +1,12 @@
 import asyncio
+import re
 import time
 from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from siem.metrics import metrics
 from siem.campaign_scheduler import run_scheduler_loop
@@ -23,6 +24,7 @@ from siem.router.reports import router as reports_router
 from siem.router.threats import router as threats_router
 from siem.router.waf import router as waf_router
 from siem.router.course_cybersecurity import router as pyme_router
+from siem.router.demo import router as demo_router
 
 
 @asynccontextmanager
@@ -161,9 +163,30 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     # Access -- protege aunque Access esté mal configurado, aunque el puerto
     # se vuelva a exponer, o aunque la petición llegue desde dentro de la
     # LAN/red Docker.
+    #
+    # Excepción (encontrada 2026-09-03 al añadir la ruta de demo): los
+    # enlaces de clic/reporte/confirmación de campañas (siem/router/
+    # campaigns.py) están documentados como "sin autenticación a propósito"
+    # porque van dentro de un email real a un empleado, que nunca puede
+    # llevar la cabecera X-SIAM-API-Key -- pero al vivir bajo /v1/campaigns/
+    # este middleware los bloqueaba igualmente con 401 en cuanto
+    # SIAM_API_KEY estuviera configurada (como en producción), rompiendo el
+    # simulacro de phishing sin que ningún test lo detectara (conftest.py
+    # fuerza SIAM_API_KEY vacía). Se exime por patrón exacto, no por prefijo
+    # /v1/campaigns/ entero, para no reabrir sin querer listar/analytics.
+    _PUBLIC_CAMPAIGN_LINK = re.compile(
+        r"^/v1/campaigns/[^/]+/(click|report)/[^/]+$"
+        r"|^/v1/campaigns/[^/]+/targets/[^/]+/acknowledge$"
+    )
+
     @app.middleware("http")
     async def api_key_middleware(request: Request, call_next):
-        if request.url.path.startswith("/v1/") and settings_.SIAM_API_KEY:
+        path = request.url.path
+        if (
+            path.startswith("/v1/")
+            and settings_.SIAM_API_KEY
+            and not _PUBLIC_CAMPAIGN_LINK.match(path)
+        ):
             provided = request.headers.get("x-siam-api-key")
             if provided != settings_.SIAM_API_KEY:
                 return JSONResponse({"detail": "No autorizado"}, status_code=401)
@@ -181,6 +204,25 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    # --- demosiem.praxialabs.com -> demo pública ---
+    # Hostname del túnel Cloudflare pensado en su día para "demo con datos
+    # reales, solo email de prospecto aprobado en Access" (ver docstring de
+    # siem/router/demo.py) -- pero esa política de Access nunca se configuró:
+    # descubierto 2026-09-04, servía el dashboard real sin gate (aunque
+    # /v1/* seguía pidiendo X-SIAM-API-Key, así que no llegaba a filtrar
+    # datos). Con /demo/dashboard ya cubriendo la demo pública, se reutiliza
+    # el hostname redirigiendo todo su tráfico ahí -- así no hace falta
+    # tocar la config de Cloudflare (el túnel ya entrega ese tráfico aquí).
+    # Middleware añadido el último para que quede como capa más externa y
+    # corte la petición antes de api_key_middleware/routing.
+    @app.middleware("http")
+    async def demo_host_redirect_middleware(request: Request, call_next):
+        host = request.headers.get("host", "").split(":")[0].lower()
+        if host == "demosiem.praxialabs.com":
+            return RedirectResponse("https://siem.praxialabs.com/demo/dashboard", status_code=302)
+        return await call_next(request)
+    # -------------------------------------------------------------
+
     app.include_router(tickets_router)  # /v1/ingest/jira, /v1/metrics, /v1/tickets (SQLite, ya existía)
     app.include_router(monitoring_router)  # /v1/monitoring/* (módulo 1)
     app.include_router(incidents_router)  # /v1/incidents/* (módulo 3 y 4)
@@ -192,6 +234,7 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     app.include_router(waf_router)  # /v1/ingest/waf (WAAP hibrido: Cloudflare + Coraza)
     app.include_router(active_defense_router)  # /v1/active-defense/* (módulo premium, ver active_defense.py)
     app.include_router(pyme_router)  # /v1/pyme/* (Ciberseguridad PYME - PDFs del curso)
+    app.include_router(demo_router)  # /demo, /demo/request (fuera de /v1/, público a propósito)
 
     return app
 
