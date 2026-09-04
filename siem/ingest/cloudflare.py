@@ -35,6 +35,20 @@ CLOUDFLARE_GRAPHQL_URL = "https://api.cloudflare.com/client/v4/graphql"
 # firewallEventsAdaptive: eventos WAF/rate-limit/bot post-mitigación. Es el
 # dataset que Cloudflare recomienda para SIEM -- ver docs oficiales de
 # GraphQL Analytics. Se pide un máximo de 1000 por query (limitado por CF).
+#
+# Bug real (2026-09-04): se añadió de una vez un lote de campos de
+# enriquecimiento y tumbaron la ingesta entera -- wafAttackScore/
+# wafAttackScoreClass, botScore/botScoreSrcName/verifiedBotCategory (add-on
+# Bot Management) y ja3Hash/ja4 (fingerprinting TLS) están todos detrás de
+# planes de pago que esta zona (Free) no tiene, y a diferencia de un campo
+# ausente normal, GraphQL responde con un error de autorización que descarta
+# la query COMPLETA (sin resultado parcial), no solo el campo problemático.
+# Verificado campo a campo con curl directo contra la API real: de todo el
+# enriquecimiento que se intentó añadir, solo clientASNDescription y
+# clientRefererHost están disponibles en Free. Cualquier campo nuevo que se
+# añada aquí hay que probarlo contra la zona real (curl, no solo leer docs)
+# antes de darlo por bueno -- las docs de GraphQL no distinguen qué campos
+# requieren qué plan.
 _FIREWALL_EVENTS_QUERY = """
 query FirewallEvents($zoneTag: string!, $since: Time!, $until: Time!) {
   viewer {
@@ -58,6 +72,8 @@ query FirewallEvents($zoneTag: string!, $since: Time!, $until: Time!) {
         clientRequestPath
         clientRequestQuery
         userAgent
+        clientASNDescription
+        clientRefererHost
       }
     }
   }
@@ -168,6 +184,8 @@ def _row_to_waf_event(row: dict[str, Any]) -> WafEvent:
         method=row.get("clientRequestHTTPMethodName"),
         uri=uri or None,
         user_agent=row.get("userAgent"),
+        asn_org=row.get("clientASNDescription"),
+        referer_host=row.get("clientRefererHost"),
         raw=row,
     )
 

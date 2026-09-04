@@ -72,6 +72,18 @@ class WafEvent(BaseModel):
     # Severidad tal como la vio el WAF (opcional; si no viene se deriva de action)
     severity_hint: Optional[Literal["info", "baja", "media", "alta", "critica"]] = None
 
+    # Enriquecimiento -- lo que Cloudflare expone en firewallEventsAdaptive y
+    # NO es una MAC (una MAC no viaja por internet, solo es visible dentro
+    # del mismo segmento de red local: no hay forma de obtenerla de un
+    # atacante remoto, lo confirma cualquier RFC de Ethernet/ARP). El plan
+    # Free de esta zona NO da acceso a botScore/verifiedBotCategory (add-on
+    # Bot Management), ja3Hash/ja4 (fingerprinting TLS) ni wafAttackScore
+    # (verificado con curl directo, 2026-09-04) -- se probaron y se
+    # descartaron porque tumbaban la ingesta entera (ver comentario en
+    # siem/ingest/cloudflare.py). Solo quedan estos dos, que sí son Free.
+    asn_org: Optional[str] = None            # clientASNDescription
+    referer_host: Optional[str] = None       # clientRefererHost
+
     raw: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -157,6 +169,15 @@ def _to_event(waf: WafEvent) -> Event:
             "asn": waf.asn,
             "attack_category": waf.attack_category,
             "action": waf.action,
+            "rule_id": waf.rule_id,
+            "rule_message": waf.rule_message,
+            "host": waf.host,
+            "method": waf.method,
+            "uri": waf.uri,
+            "user_agent": waf.user_agent,
+            # Enriquecimiento -- ver comentario en WafEvent más arriba.
+            "asn_org": waf.asn_org,
+            "referer_host": waf.referer_host,
         },
     )
 
