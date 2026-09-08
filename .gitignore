@@ -34,3 +34,4 @@ agent/skills/
 .claude/
 .serena/
 graphify-out/
+.vercel
