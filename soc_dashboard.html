@@ -49,12 +49,7 @@
   var IS_DEMO = window.location.pathname.indexOf('/demo/dashboard') === 0;
   var KEY_STORAGE = 'siam_api_key';
   function getKey() {
-    var k = localStorage.getItem(KEY_STORAGE);
-    if (!k) {
-      k = window.prompt('Clave de API de SIAM (X-SIAM-API-Key):') || '';
-      if (k) localStorage.setItem(KEY_STORAGE, k);
-    }
-    return k;
+    return localStorage.getItem(KEY_STORAGE) || '';
   }
   var originalFetch = window.fetch.bind(window);
   window.fetch = function (input, init) {
@@ -68,9 +63,16 @@
         init.headers = Object.assign({}, init.headers, { 'X-SIAM-API-Key': getKey() });
       }
     }
+    init = init || {};
+    init.credentials = 'same-origin';
     return originalFetch(input, init).then(function (res) {
       if (res.status === 401 && url.indexOf('/v1/') === 0 && !IS_DEMO) {
         localStorage.removeItem(KEY_STORAGE);
+        // Añadido 2026-09-08 (login + 2FA del dashboard real): si la sesión
+        // expiró, el backend responde 401 a /v1/* y esta página viva recibe
+        // la respuesta a medias. Mejor redirigir al login que dejar el panel
+        // en silencio con datos que no llegan.
+        window.location.replace('/login');
       }
       return res;
     });

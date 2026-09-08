@@ -6,6 +6,7 @@ python-dotenv==1.0.1
 pydantic-settings==2.8.1
 sqlalchemy==2.0.35
 python-multipart==0.0.32  # Form() del panel señuelo de Active Defense (siem/router/honeypot.py)
+pyotp==2.9.0
 
 # Motor de IA plegable (módulos 2 y 9). Solo se usan si AI_PROVIDER lo
 # requiere; el sistema funciona sin ellas con AI_PROVIDER=none (ver

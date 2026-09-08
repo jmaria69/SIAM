@@ -72,6 +72,47 @@ Configurable vía `.env` (`AI_PROVIDER=anthropic|openai|local|none`). Sin API ke
 
 `http://localhost:8001/dashboard` — página autocontenida (React vía CDN, sin build) con Monitorización, Incidentes, Chat IA y Panel ejecutivo en pestañas. El widget viejo de tickets Jira sigue en `http://localhost:8001/`, sin tocar. Para incrustar los componentes en una app React/Next real, usa los `.jsx` de `src/components/`.
 
+## Acceso al panel real (login + 2FA)
+
+Desde el 2026-09-08, el dashboard de datos **reales** (`/`, siem.db) queda detrás
+de un login de administrador con dos factores, misma idea que
+`praxialabs.com/admin`:
+
+1. **Usuario + contraseña** (hash scrypt, nunca en texto plano).
+2. **Código TOTP 2FA** de tu aplicación de autenticación (Google Authenticator,
+   Aegis, 1Password...).
+
+Configuración (`.env` local o `.env.production` en el despliegue real):
+
+```bash
+python -m siem.setup_auth
+```
+
+La utilidad pide la contraseña (no la imprime), genera el hash, el secreto TOTP
+con su URI `otpauth` para la app de autenticación, el secreto de sesión, e
+imprime el bloque de variables listas para pegar:
+
+```
+SIAM_ADMIN_USERNAME=...
+SIAM_ADMIN_PASSWORD_HASH=scrypt$...
+SIAM_ADMIN_TOTP_SECRET=...
+SIAM_AUTH_SESSION_SECRET=...
+```
+
+Comportamiento:
+
+- **Con** `SIAM_ADMIN_*` configuradas: `GET /` sin sesión redirige a
+  `/login`; `/v1/*` sin sesión ni API key devuelve 401. La cookie de sesión
+  dura 8 h (`HttpOnly`, `SameSite=Lax`, `Secure` en producción).
+- **Sin** credenciales configuradas (desarrollo local puro): el dashboard se
+  sirve sin login, como siempre.
+- La demo pública `/demo/dashboard` (base de datos `siam_demo.db`, datos
+  inventados) **sigue sin login a propósito** — es un prospecto anónimo.
+- El panel señuelo `/admin` (Active Defense honeypot) también permanece
+  público a propósito.
+- Si quieres regenerar el secreto 2FA (dispositivo perdido), vuelve a ejecutar
+  `python -m siem.setup_auth` y sustituye los valores en el `.env`.
+
 ## API completa
 
 Con el servidor arrancado: `http://localhost:8001/docs` (Swagger) o `/redoc`.

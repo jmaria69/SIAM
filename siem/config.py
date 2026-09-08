@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     # obligatoria -- create_app() aborta el arranque si falta.
     SIAM_API_KEY: Optional[str] = None
 
+    # Acceso al dashboard real. La contraseña debe ser un hash generado con
+    # `python -c "from siem.auth import hash_password; print(hash_password(input()))"`.
+    SIAM_ADMIN_USERNAME: Optional[str] = None
+    SIAM_ADMIN_PASSWORD_HASH: Optional[str] = None
+    SIAM_ADMIN_TOTP_SECRET: Optional[str] = None
+    SIAM_AUTH_SESSION_SECRET: Optional[str] = None
+
     # Motor de IA plegable: anthropic | openai | local | none
     AI_PROVIDER: Literal["anthropic", "openai", "local", "none"] = "none"
     ANTHROPIC_API_KEY: Optional[str] = None

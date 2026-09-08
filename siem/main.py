@@ -26,6 +26,8 @@ from siem.router.waf import router as waf_router
 from siem.router.course_cybersecurity import router as pyme_router
 from siem.router.demo import router as demo_router
 from siem.router.honeypot import router as honeypot_router
+from siem.router.auth import router as auth_router
+from siem.auth import SESSION_COOKIE, session_username
 
 
 @asynccontextmanager
@@ -183,14 +185,82 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     @app.middleware("http")
     async def api_key_middleware(request: Request, call_next):
         path = request.url.path
+        # Una sesión de navegador válida (cookie firmada por la sesión de
+        # administrador, ver siem/router/auth.py) también abre paso a /v1/*:
+        # es la autenticación "humana" del dashboard real.
+        session_user = session_username(
+            request.cookies.get(SESSION_COOKIE), settings_.SIAM_AUTH_SESSION_SECRET
+        )
         if (
             path.startswith("/v1/")
             and settings_.SIAM_API_KEY
             and not _PUBLIC_CAMPAIGN_LINK.match(path)
+            and not session_user
         ):
             provided = request.headers.get("x-siam-api-key")
             if provided != settings_.SIAM_API_KEY:
                 return JSONResponse({"detail": "No autorizado"}, status_code=401)
+        return await call_next(request)
+    # -------------------------------------------------------------
+
+    # --- ACCESO AL DASHBOARD REAL (LOGIN + 2FA, 2026-09-08) ---
+    # El dashboard de datos REALES (siem.db) queda detrás de /login con
+    # usuario + contraseña (scrypt) + código 2FA TOTP (siem/router/auth.py),
+    # como praxialabs.com/admin. La demo pública (/demo/*, siam_demo.db)
+    # sigue SIN login a propósito: es un prospecto anónimo que debe poder
+    # ver el SOC con datos inventados.
+    #
+    # Reglas:
+    #   * Abierto siempre: /demo/*, /login, /logout, /health, /admin (panel
+    #     señuelo de Active Defense) y los enlaces de campaña que viajan en
+    #     emails reales (_PUBLIC_CAMPAIGN_LINK).
+    #   * /v1/*: requiere sesión O la API key compartida. Si ninguna de las
+    #     dos está configurada (desarrollo local puro), pasa -- mismo
+    #     fail-open que en api_key_middleware.
+    #   * "/" y "/dashboard": redirigen a /login si no hay sesión. Si no hay
+    #     credenciales de admin configuradas (dev sin login), se sirven tal
+    #     cual, como siempre.
+    #   * El resto (/docs, /redoc, favicon, rutas inexistentes...) pasa:
+    #     docs ya se desactiva en producción y no merece sesión en dev.
+    @app.middleware("http")
+    async def real_dashboard_auth_middleware(request: Request, call_next):
+        path = request.url.path
+        is_demo = path == "/demo" or path.startswith("/demo/")
+        # El login solo se activa con los 4 valores presentes (como genera
+        # siem/setup_auth.py). Configuración parcial = development sin login,
+        # nunca un bloqueo por una variable a medio poner.
+        auth_enabled = all((
+            settings_.SIAM_ADMIN_USERNAME,
+            settings_.SIAM_ADMIN_PASSWORD_HASH,
+            settings_.SIAM_ADMIN_TOTP_SECRET,
+            settings_.SIAM_AUTH_SESSION_SECRET,
+        ))
+        public = (
+            path in {"/login", "/logout", "/health", "/admin"}
+            or path.startswith("/admin/")
+            or bool(_PUBLIC_CAMPAIGN_LINK.match(path))
+        )
+        session_user = session_username(
+            request.cookies.get(SESSION_COOKIE), settings_.SIAM_AUTH_SESSION_SECRET
+        )
+        if is_demo or public or session_user:
+            return await call_next(request)
+
+        if path.startswith("/v1/"):
+            auth_configured = bool(settings_.SIAM_API_KEY or auth_enabled)
+            key_present = bool(
+                settings_.SIAM_API_KEY
+                and request.headers.get("x-siam-api-key") == settings_.SIAM_API_KEY
+            )
+            if not auth_configured or key_present:
+                return await call_next(request)
+            return JSONResponse({"detail": "Autenticación requerida"}, status_code=401)
+
+        if path in {"/", "/dashboard"}:
+            if not auth_enabled:
+                return await call_next(request)
+            return RedirectResponse("/login", status_code=303)
+
         return await call_next(request)
     # -------------------------------------------------------------
 
@@ -237,6 +307,7 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     app.include_router(pyme_router)  # /v1/pyme/* (Ciberseguridad PYME)
     app.include_router(demo_router)  # /demo, /demo/request (fuera de /v1/, público a propósito)
     app.include_router(honeypot_router)  # /admin -- panel señuelo de Active Defense (fuera de /v1/, público a propósito)
+    app.include_router(auth_router)
 
     return app
 
