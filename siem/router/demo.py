@@ -41,6 +41,7 @@ from siem.router.monitoring import get_overview as _monitoring_overview
 from siem.router.monitoring import get_timeseries as _monitoring_timeseries
 from siem.router.monitoring import ingest_event as _monitoring_ingest
 from siem.router.monitoring import list_assets as _monitoring_assets
+from siem.router.reports import executive_panel as _reports_executive
 from siem.router.course_cybersecurity import router as pyme_router
 from siem.store import SiemStore
 
@@ -232,6 +233,11 @@ def demo_explain_incident(incident_id: str, store: SiemStore = Depends(get_demo_
 @router.post("/demo/v1/incidents/{incident_id}/kill-chain")
 def demo_kill_chain(incident_id: str, store: SiemStore = Depends(get_demo_store)) -> dict:
     return _incidents_kill_chain(incident_id, store, _demo_settings())
+
+
+@router.get("/demo/v1/reports/executive")
+def demo_executive_panel(store: SiemStore = Depends(get_demo_store)) -> dict:
+    return _reports_executive(store)
 
 
 # /demo/v1/pyme/* -- el motor de Ciberseguridad PYME es un conjunto de
