@@ -1,10 +1,10 @@
-"""Módulo de Ciberseguridad Integrado para PYMEs (Basado en los 2 PDFs del Curso).
+"""Módulo de Ciberseguridad Integrado para PYMEs.
 
 Implementa la lógica de:
 1. Plan Director de Seguridad (PDS) y Políticas por Componente (ISO 27001, RGPD, NIST).
 2. Matriz de Análisis y Gestión de Riesgos y BIA (RTO, RPO, MTTD, MTTR).
 3. Planes de Continuidad de Negocio, DRP y Estrategias de Backup 3-2-1 / Borrado Seguro.
-4. Simulador de Ataques y Defensas de las 18 Unidades Didácticas.
+4. Simulador de Ataques y Defensas.
 5. Auditoría de Ciberseguridad ISO 27001 / RGPD / Hardening de Puesto de Trabajo.
 """
 
@@ -67,7 +67,7 @@ class AuditEvaluationRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 class CourseCybersecurityEngine:
-    """Motor principal que compila los conocimientos de las 18 Unidades Didacticas."""
+    """Motor principal de análisis y respuesta de ciberseguridad."""
 
     @staticmethod
     def generate_pds(req: PdsRequest) -> Dict[str, Any]:
@@ -272,11 +272,10 @@ class CourseCybersecurityEngine:
 
     @staticmethod
     def simulate_attack_scenario(req: AttackSimulationRequest) -> Dict[str, Any]:
-        """Simula uno de los 9 escenarios de ataque/defensa del temario completo."""
+        """Simula uno de los escenarios de ataque y defensa disponibles."""
         scenarios: Dict[str, Any] = {
             "arp_poisoning": {
                 "nombre": "Ataque de Envenenamiento ARP (ARP Poisoning / Gateway Spoofing)",
-                "unidad": "Unidad 9 Modulo 1 (Ataques a nivel de red) / Unidad 3 Modulo 1",
                 "descripcion": "Un atacante en la LAN envia paquetes ARP falsificados para asociar su MAC a la IP del Router/Gateway corporativo.",
                 "triada_afectada": "Confidencialidad e Integridad (Permite ataques Man-in-the-Middle - MitM).",
                 "capa_defensa": "Capa de Red (Layer 2 / Switch)",
@@ -285,7 +284,6 @@ class CourseCybersecurityEngine:
             },
             "ddos_syn_flood": {
                 "nombre": "Ataque DDoS SYN Flood a Servidor Web E-Commerce",
-                "unidad": "Unidad 9 Modulo 1 (Denegacion de Servicio) / Unidad 7 Modulo 2",
                 "descripcion": "Inundacion masiva de solicitudes TCP SYN sin completar el saludo de 3 vias, agotando la tabla de conexiones del servidor.",
                 "triada_afectada": "Disponibilidad (Interrupcion total de la tienda online).",
                 "capa_defensa": "Capa Perimetral / Nube (WAF / Anycast Anti-DDoS)",
@@ -294,7 +292,6 @@ class CourseCybersecurityEngine:
             },
             "phishing_spear": {
                 "nombre": "Spear Phishing dirigido a Finanzas con archivo PDF Malicioso",
-                "unidad": "Unidad 2 Modulo 1 (Ingenieria Social) / Unidad 2 Modulo 2",
                 "descripcion": "Correo electronico hiperpersonalizado simulando un proveedor para ejecutar una carga util e infectar la estacion de trabajo.",
                 "triada_afectada": "Confidencialidad, Integridad y Disponibilidad.",
                 "capa_defensa": "Capa Humana + Capa de Aplicacion/Endpoint",
@@ -303,7 +300,6 @@ class CourseCybersecurityEngine:
             },
             "sqli_waf": {
                 "nombre": "Inyeccion SQL (SQLi) en el formulario de Login del E-Commerce",
-                "unidad": "Unidad 7 Modulo 2 (Seguridad Web) / Unidad 9 Modulo 1",
                 "descripcion": "El atacante introduce OR 1=1 para eludir la validacion y extraer la base de datos de usuarios.",
                 "triada_afectada": "Confidencialidad e Integridad de la base de datos.",
                 "capa_defensa": "Capa de Aplicacion (WAF y Codigo seguro)",
@@ -312,7 +308,6 @@ class CourseCybersecurityEngine:
             },
             "wpa3_byod": {
                 "nombre": "Dispositivo Personal Infectado (BYOD) en Red Wi-Fi Corporativa",
-                "unidad": "Unidad 8 Modulo 2 / Unidad 5 Modulo 1 (Redes Inalambricas y BYOD)",
                 "descripcion": "Un smartphone personal sin actualizar se conecta a la Wi-Fi corporativa e intenta movimiento lateral.",
                 "triada_afectada": "Confidencialidad e Integridad de la red interna.",
                 "capa_defensa": "Capa de Red Inalambrica y Dispositivos Moviles",
@@ -321,7 +316,6 @@ class CourseCybersecurityEngine:
             },
             "iot_botnet": {
                 "nombre": "Compromiso de Camaras IP IoT para reclutamiento en Botnet DDoS",
-                "unidad": "Unidad 9 Modulo 2 (Tecnologia IoT) / Unidad 2 Modulo 1 (Botnets)",
                 "descripcion": "Atacante explota credenciales por defecto (admin/admin) y firmware desactualizado en sensores/camaras IoT.",
                 "triada_afectada": "Disponibilidad e Integridad.",
                 "capa_defensa": "Capa de Red y Dispositivos IoT",
@@ -330,7 +324,6 @@ class CourseCybersecurityEngine:
             },
             "biometric_spoof": {
                 "nombre": "Ataque de Suplantacion Biometrica (Facial Presentation Attack)",
-                "unidad": "Unidad 7 Modulo 1 (Sistemas Biometricos)",
                 "descripcion": "Presentacion de una fotografia/video de alta resolucion frente a la camara de control de acceso fisico.",
                 "triada_afectada": "Autenticidad y Confidencialidad.",
                 "capa_defensa": "Capa Fisica / Biometrica",
@@ -339,7 +332,6 @@ class CourseCybersecurityEngine:
             },
             "ransomware_exfil": {
                 "nombre": "Ataque de Doble Extorsion por Ransomware",
-                "unidad": "Unidad 3 Modulo 1 (Malware) / Unidad 6 Modulo 1 (Fuga de Datos / DLP)",
                 "descripcion": "El malware exfiltra datos confidenciales antes de cifrar el sistema de archivos y pedir rescate en criptomonedas.",
                 "triada_afectada": "Confidencialidad, Integridad y Disponibilidad.",
                 "capa_defensa": "Capa de Datos + Aplicacion + Copias de Seguridad",
@@ -348,7 +340,6 @@ class CourseCybersecurityEngine:
             },
             "session_hijacking": {
                 "nombre": "Secuestro de Sesion por Interceptacion de Token JWT/Cookie",
-                "unidad": "Unidad 2 Modulo 1 (Autenticacion) / Unidad 7 Modulo 2",
                 "descripcion": "El atacante captura la cookie de sesion sin atributos Secure y HttpOnly a traves de Wi-Fi abierta.",
                 "triada_afectada": "Autenticidad y Confidencialidad.",
                 "capa_defensa": "Capa de Aplicacion y Red",
@@ -376,7 +367,6 @@ class CourseCybersecurityEngine:
         return {
             "vector": req.vector_ataque,
             "nombre_escenario": data["nombre"],
-            "unidad_didactica": data["unidad"],
             "descripcion": data["descripcion"],
             "triada_cia_afectada": data["triada_afectada"],
             "capa_defensa_afectada": data["capa_defensa"],

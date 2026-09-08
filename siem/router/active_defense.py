@@ -8,7 +8,7 @@ tiene contratado -- gating real, no solo ocultar la pestaña en el frontend.
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from siem.active_defense import (
@@ -87,7 +87,12 @@ def _sync_shared_rule(action: str, settings: Settings, ips: set[str]) -> None:
 
 
 @router.get("/overview", dependencies=[Depends(_require_enabled)])
-def overview(store: SiemStore = Depends(get_store)) -> dict:
+def overview(
+    event_limit: int = Query(10, ge=10, le=100),
+    store: SiemStore = Depends(get_store),
+) -> dict:
+    if event_limit not in (10, 50, 100):
+        raise HTTPException(status_code=422, detail="event_limit debe ser 10, 50 o 100")
     waf_events = [e for e in store.list_events() if e.source in WAF_SOURCES]
     attackers = list_attackers(waf_events, blocked_ips=_blocked_ips(store), whitelisted_ips=_whitelisted_ips(store))
     campaigns = list_campaigns(attackers)
@@ -95,7 +100,7 @@ def overview(store: SiemStore = Depends(get_store)) -> dict:
 
     return {
         "threat_score": compute_threat_score(waf_events),
-        "live_attacks": [e.model_dump() for e in waf_events[:20]],
+        "live_attacks": [e.model_dump() for e in waf_events[-event_limit:]][::-1],
         "attackers": attackers[:50],
         "campaigns": campaigns,
         "timeline": [e.model_dump() for e in timeline],

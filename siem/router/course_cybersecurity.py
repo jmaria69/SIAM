@@ -1,7 +1,7 @@
 """Router FastAPI para el módulo de Ciberseguridad PYME integrado.
 
 Prefijo: /v1/pyme
-Expone los 5 bloques del Plan Director de Seguridad basado en el temario del curso.
+Expone los 5 bloques operativos del Plan Director de Seguridad.
 """
 
 from fastapi import APIRouter
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/v1/pyme", tags=["Ciberseguridad PYME"])
 # Plan Director de Seguridad (PDS)
 # ---------------------------------------------------------------------------
 
-@router.get("/pds/template", summary="Plantilla de PDS para PYME (UD4 M2 / UD1 M1)")
+@router.get("/pds/template", summary="Plantilla de PDS para PYME")
 async def pds_template():
     """Devuelve un ejemplo completo de los datos requeridos para generar un PDS."""
     return {
@@ -74,7 +74,7 @@ async def drp_calculate(req: BackupCalculatorRequest):
 
 @router.get("/simulation/vectors", summary="Lista de vectores de ataque simulables")
 async def simulation_vectors():
-    """Devuelve los 9 vectores de ataque del temario disponibles para simular."""
+    """Devuelve los vectores de ataque disponibles para simular."""
     return {
         "vectores": [
             {"id": "arp_poisoning",    "label": "ARP Poisoning / MitM"},
