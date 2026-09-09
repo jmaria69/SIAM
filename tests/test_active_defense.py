@@ -369,6 +369,57 @@ def test_unblocking_a_real_block_deletes_the_cloudflare_rule(client, monkeypatch
         _disable_module()
 
 
+def test_respond_twice_on_same_ip_replaces_ioc_instead_of_duplicating(client, monkeypatch):
+    """El SOC puede confirmar una acción distinta sobre una IP ya bloqueada
+    (p.ej. HONEYPOT -> BLOCK) sin desbloquear antes -- ver soc_dashboard.html,
+    select + "Confirmar" en la fila ya bloqueada. No debe quedar más de un
+    IOC por IP en /blacklist."""
+    import siem.router.active_defense as ad_router
+
+    honeypot_calls = []
+    monkeypatch.setattr(ad_router, "sync_honeypot_rule", lambda settings, ips, target_url: honeypot_calls.append(set(ips)))
+    monkeypatch.setattr(ad_router, "create_access_rule", lambda settings, ip, mode, notes: "cf-rule-789")
+    _enable_module_with_cloudflare()
+    try:
+        client.post("/v1/active-defense/respond?ip=7.7.7.20&action=HONEYPOT&confirm=true")
+        client.post("/v1/active-defense/respond?ip=7.7.7.20&action=BLOCK&confirm=true")
+
+        blacklist = client.get("/v1/active-defense/blacklist").json()
+        entries = [b for b in blacklist if b["value"] == "7.7.7.20"]
+        assert len(entries) == 1
+        assert entries[0]["action"] == "BLOCK"
+        assert entries[0]["cf_rule_id"] == "cf-rule-789"
+        # al pasar de HONEYPOT a BLOCK, la regla compartida se resincroniza
+        # sin esta IP -- si no, quedaría en la regla de honeypot Y con su
+        # propia IP Access Rule de BLOCK a la vez.
+        assert honeypot_calls[-1] == set()
+    finally:
+        _disable_module()
+
+
+def test_respond_twice_with_same_action_does_not_revert_or_duplicate(client, monkeypatch):
+    """Reconfirmar la misma acción (p.ej. doble click en "Confirmar") es un
+    no-op sobre Cloudflare: no hay que deshacer nada porque no cambió, y
+    /blacklist sigue con una sola entrada."""
+    import siem.router.active_defense as ad_router
+
+    honeypot_calls = []
+    monkeypatch.setattr(ad_router, "sync_honeypot_rule", lambda settings, ips, target_url: honeypot_calls.append(set(ips)))
+    _enable_module_with_cloudflare()
+    try:
+        client.post("/v1/active-defense/respond?ip=7.7.7.21&action=HONEYPOT&confirm=true")
+        client.post("/v1/active-defense/respond?ip=7.7.7.21&action=HONEYPOT&confirm=true")
+
+        blacklist = client.get("/v1/active-defense/blacklist").json()
+        entries = [b for b in blacklist if b["value"] == "7.7.7.21"]
+        assert len(entries) == 1
+        # dos sync -- una por cada /respond -- pero ninguna vacía la IP de la
+        # regla compartida, porque la acción no cambió.
+        assert all(calls == {"7.7.7.21"} for calls in honeypot_calls)
+    finally:
+        _disable_module()
+
+
 def test_blacklist_crud(client):
     _enable_module()
     try:

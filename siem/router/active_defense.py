@@ -86,6 +86,28 @@ def _shared_rule_ips(
     return ips
 
 
+def _revert_ioc(ioc: IOC, store: SiemStore, settings: Settings) -> None:
+    """Deshace en Cloudflare lo que dejó activo un IOC (usado tanto al
+    desbloquear como al reemplazarlo por una acción distinta en /respond) --
+    si no, el SOC vería el dashboard "limpio" mientras la acción de verdad
+    sigue activa en el firewall. BLOCK/CHALLENGE borran su IP Access Rule
+    propia; HONEYPOT/RATE_LIMIT recalculan su recurso compartido sin esta IP
+    (nunca tienen cf_rule_id, ver /respond)."""
+    if ioc.cf_rule_id and is_configured(settings):
+        try:
+            delete_access_rule(settings, ioc.cf_rule_id)
+        except CloudflareFirewallError as exc:
+            raise HTTPException(status_code=502, detail=f"No se pudo desbloquear en Cloudflare: {exc}")
+    elif ioc.action in SHARED_RULE_ACTIONS and _shared_rule_configured(ioc.action, settings):
+        try:
+            ips = _shared_rule_ips(ioc.action, store, remove_ip=ioc.value)
+            _sync_shared_rule(ioc.action, settings, ips)
+        except CloudflareFirewallError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"No se pudo actualizar la regla compartida de {ioc.action} en Cloudflare: {exc}",
+            )
+
+
 def _shared_rule_configured(action: str, settings: Settings) -> bool:
     """Cada acción de SHARED_RULE_ACTIONS puede requerir credenciales
     distintas -- ver comentario de SHARED_RULE_ACTIONS."""
@@ -192,6 +214,21 @@ def respond(
     # confirmados y overview() pinta el estado "bloqueada" de verdad. Solo
     # lleva cf_rule_id cuando la acción fue BLOCK/CHALLENGE real (RATE_LIMIT/
     # HONEYPOT no crean una regla propia, ver arriba).
+    #
+    # Si la IP ya tenía un IOC (p.ej. el SOC cambia de HONEYPOT a BLOCK sin
+    # desbloquear antes), se sustituye en vez de acumular una entrada por
+    # cada acción confirmada -- si no, /blacklist y el estado "bloqueada" del
+    # dashboard quedarían con IOCs duplicados y solo el más reciente (por
+    # orden no garantizado) se vería reflejado en la fila. Si la acción
+    # anterior dejó algo activo en Cloudflare (regla propia o IP en un
+    # recurso compartido) y la nueva acción es distinta, se deshace primero
+    # -- si no, la IP quedaría en dos sitios a la vez (p.ej. en la regla de
+    # HONEYPOT Y con una IP Access Rule de BLOCK).
+    existing = next((ioc for ioc in store.list_iocs() if ioc.type == "ip" and ioc.value == ip), None)
+    if existing is not None:
+        if existing.action != action:
+            _revert_ioc(existing, store, settings)
+        store.remove_ioc(existing.id)
     store.add_ioc(IOC(type="ip", value=ip, confidence="alta", cf_rule_id=cf_rule_id, action=action))
 
     return {
@@ -241,25 +278,7 @@ def remove_from_blacklist(
     if ioc is None:
         raise HTTPException(status_code=404, detail="No encontrado")
 
-    # Si el bloqueo era real, hay que deshacerlo también en Cloudflare -- si
-    # no, "desbloquear" en el SOC dejaría la acción de verdad activa en el
-    # firewall, contradiciendo lo que muestra el dashboard. BLOCK/CHALLENGE
-    # borran su IP Access Rule propia; HONEYPOT/RATE_LIMIT recalculan su
-    # recurso compartido sin esta IP (nunca tienen cf_rule_id, ver /respond).
-    if ioc.cf_rule_id and is_configured(settings):
-        try:
-            delete_access_rule(settings, ioc.cf_rule_id)
-        except CloudflareFirewallError as exc:
-            raise HTTPException(status_code=502, detail=f"No se pudo desbloquear en Cloudflare: {exc}")
-    elif ioc.action in SHARED_RULE_ACTIONS and _shared_rule_configured(ioc.action, settings):
-        try:
-            ips = _shared_rule_ips(ioc.action, store, remove_ip=ioc.value)
-            _sync_shared_rule(ioc.action, settings, ips)
-        except CloudflareFirewallError as exc:
-            raise HTTPException(
-                status_code=502, detail=f"No se pudo actualizar la regla compartida de {ioc.action} en Cloudflare: {exc}",
-            )
-
+    _revert_ioc(ioc, store, settings)
     store.remove_ioc(ioc_id)
     return {"eliminado": True}
 
