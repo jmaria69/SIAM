@@ -1,0 +1,49 @@
+# Worker del RATE_LIMIT de Praxia Active Defense (siem/active_defense.py).
+#
+# Por qué existe: la regla de rate limiting NATIVA de Cloudflare (Rulesets,
+# fase http_ratelimit) no deja filtrar su `expression` por IP salvo en plan
+# Business+ (verificado a mano 2026-09-04, ver docstring de
+# ../../siem/cloudflare_firewall.py). El Rate Limiting API de Workers es un
+# producto DISTINTO -- un binding en tiempo de ejecución, no una regla de
+# Rulesets -- y no tiene esa restricción: basta con el plan Workers Paid
+# ($5/mes; en Free también funciona, con el tope de 100k peticiones/día).
+#
+# Qué hace: por cada petición que llega a la ruta de abajo, mira si la IP
+# del cliente está en la lista que sincroniza SIAM (sync_rate_limit_rule,
+# vía Workers KV) y, solo si lo está, aplica el binding RATE_LIMITER. El
+# resto del tráfico pasa sin gastar cupo del binding.
+name = "siam-rate-limiter"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# Sustituye por el dominio/zona real que protege esta instancia de SIAM.
+# Tiene que cubrir todo el tráfico de la zona para que el Worker vea
+# cualquier IP marcada, no solo una ruta concreta.
+routes = [
+  { pattern = "praxialabs.com/*", zone_name = "praxialabs.com" },
+]
+
+# Workers KV -- namespace de CUENTA (no de zona) donde SIAM escribe la
+# lista de IPs vigentes. El id de aquí debe coincidir con
+# CLOUDFLARE_RATE_LIMIT_KV_NAMESPACE_ID en el .env de SIAM. Créalo con:
+#   npx wrangler kv namespace create RATE_LIMITED_IPS
+[[kv_namespaces]]
+binding = "RATE_LIMITED_IPS"
+id = "01893bb13d2c470691e7392db24ede2e"
+
+# Rate Limiting API -- OJO: este `namespace_id` es un entero arbitrario que
+# solo tiene que ser único dentro de tu cuenta para IDENTIFICAR este
+# binding en concreto; NO tiene relación con el id del KV namespace de
+# arriba (son dos "namespace" distintos de productos distintos de
+# Cloudflare, la coincidencia de nombre es confusa pero así lo define la
+# API). `period` solo admite 10 o 60 segundos.
+#
+# Este umbral es ESTÁTICO -- para cambiarlo hay que editar este archivo y
+# volver a desplegar (`npx wrangler deploy`), no se puede tocar en caliente
+# desde SIAM. Lo único dinámico es QUÉ IPs están sujetas a él (eso sí lo
+# controla SIAM vía Workers KV).
+[[unsafe.bindings]]
+name = "RATE_LIMITER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 5, period = 10 }

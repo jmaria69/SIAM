@@ -35,3 +35,4 @@ agent/skills/
 .serena/
 graphify-out/
 .vercel
+.wrangler/

@@ -111,6 +111,57 @@ Documentación interactiva automática de FastAPI en `/docs` y `/redoc` — no s
 3. Variables nuevas en `.env` (ver `.env.example`): `AI_PROVIDER`, `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `LOCAL_LLM_URL`, `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID`.
 4. **Acción pendiente de José, no automatizable desde aquí**: revocar el token de Telegram expuesto en BotFather y generar uno nuevo antes de desplegar en cualquier entorno compartido.
 
+## WAAP híbrido y Praxia Active Defense (más allá del MVP fase 1 — implementado)
+
+Añadido después del MVP de fase 1 de arriba; no estaba en el alcance original del prompt (era pymes/SOC clásico), así que se documenta aparte en vez de reescribir las tablas de fase 1.
+
+### Ingesta WAF/WAAP (`siem/router/waf.py`)
+
+Diseño deliberado: NO acoplado a un vendor. Dos productores normalizan su evento a un mismo `WafEvent` y postean a `/v1/ingest/waf`, que reutiliza el mismo pipeline que el resto de SIAM (`correlate_event` → `threat_detection` → `killchain`):
+
+- **Cloudflare (cloud, activo)**: `siem/ingest/cloudflare.py` hace pull periódico (GraphQL `firewallEventsAdaptive`, cada `CLOUDFLARE_PULL_INTERVAL_SECONDS`) contra la zona real.
+- **Coraza (on-prem, fase H2, aún no implementado)**: `siem/ingest/coraza.py` leería el audit log del contenedor `waf_proxy` (ModSecurity/Coraza). El contrato (`WafEvent.source: "waf-coraza"`) ya existe; falta desplegar el proxy real — hoy no hay ningún `waf_proxy` en `docker-compose.yml`.
+
+### Praxia Active Defense (`siem/active_defense.py`, módulo premium)
+
+Gateado por `PRAXIA_ACTIVE_DEFENSE_ENABLED` (add-on por cliente, `/status` siempre accesible, el resto 403 si no está contratado). Reutiliza el Collector/Analyzer del WAAP de arriba y añade:
+
+- **Agrupación por atacante/campaña** (`list_attackers`, `list_campaigns`) sobre los eventos `waf-cloudflare`/`waf-coraza`.
+- **Response Engine** (`suggest_response`, determinista por severidad, sin IA): `CRITICAL→BLOCK`, `HIGH→RATE_LIMIT`, `MEDIUM→CHALLENGE`, `LOW/INFO→HONEYPOT`. Es una sugerencia, no una ejecución automática — `POST /v1/active-defense/respond` exige `confirm=true` explícito, mismo principio de "automatización con aprobación humana" que el resto del MVP (ver sección de Alcance más arriba).
+
+### Conector real contra Cloudflare (`siem/cloudflare_firewall.py`)
+
+| Acción | Mecanismo real | Producto de Cloudflare | Restricción de plan |
+|---|---|---|---|
+| BLOCK / CHALLENGE | IP Access Rule propia por IP | Firewall Access Rules (zona) | Ninguna |
+| HONEYPOT | Una única regla compartida por zona, redirige (307) a `/admin` (panel señuelo, `siem/router/honeypot.py`) | Rulesets, fase `http_request_dynamic_redirect` | Plan Free solo permite 1 regla de este tipo por zona → de ahí que sea "compartida", no una por IP |
+| RATE_LIMIT | Set de IPs en Workers KV, leído por un Worker propio (`workers/rate-limiter/`) que aplica el binding `RATE_LIMITER` solo a esas IPs | Rate Limiting API de **Workers** (binding en runtime, no una regla de Rulesets) | Ninguna — basta Workers Free/Paid ($5/mes). La alternativa nativa (Rulesets, fase `http_ratelimit`) exige plan Business+ para poder filtrar `ip.src`, así que se evita a propósito |
+
+```
+Cloudflare (zona real)                    SIAM (siem/)
+┌───────────────────────┐   pull GraphQL  ┌──────────────────────────────┐
+│ WAF/Firewall events     │───────────────▶│ siem/ingest/cloudflare.py     │
+└───────────────────────┘                 │          │                     │
+                                           │          ▼                     │
+                                           │ /v1/ingest/waf → correlate_event│
+                                           │          │                     │
+                                           │          ▼                     │
+                                           │ siem/active_defense.py          │
+                                           │ (agrupa por atacante/campaña)   │
+                                           │          │                     │
+                                           │          ▼                     │
+                                           │ POST /v1/active-defense/respond │
+                                           │ ?action=...&confirm=true         │
+                                           └──────────┬──────────────────────┘
+                                                       │ ejecución real (si hay credenciales)
+                        ┌──────────────────────────────┼───────────────────────────────┐
+                        ▼                               ▼                                ▼
+              IP Access Rule                   Regla compartida                Workers KV +
+              (BLOCK / CHALLENGE)               (HONEYPOT → /admin)            Worker (RATE_LIMIT)
+```
+
+Si `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ZONE_ID` faltan, todo cae a simulado (mismo criterio que SMTP/Telegram: una integración opcional nunca tumba el endpoint). RATE_LIMIT tiene además su propia comprobación (`CLOUDFLARE_ACCOUNT_ID` + `CLOUDFLARE_RATE_LIMIT_KV_NAMESPACE_ID`) independiente de la del resto de acciones, para que un cliente con BLOCK/CHALLENGE/HONEYPOT reales no vea nada romperse mientras no despliegue el Worker. Pasos de despliegue del Worker en `workers/rate-limiter/README.md`.
+
 ## Estrategia de escalabilidad (fases siguientes)
 
 - **Fase 2**: migrar de SQLite a PostgreSQL cuando haya concurrencia real de varios clientes (SQLite con `StaticPool`/archivo único no escala a múltiples workers escribiendo a la vez); autenticación JWT + MFA real; feeds de threat intel externos.

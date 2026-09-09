@@ -15,12 +15,15 @@ import datetime as dt
 from typing import List, Optional
 
 from fastapi import Depends
-from sqlalchemy import case, func
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
+from siem.active_defense import SEVERITY_ORDER, WAF_SOURCES
 from siem.database import get_db
 from siem.db_models import (
+    AggregatorCursorDB,
     AssetDB,
+    AttackerProfileDB,
     AutomationRuleDB,
     CampaignDB,
     EventDB,
@@ -42,6 +45,10 @@ from siem.models import (
     TimelineEntry,
     WhitelistEntry,
 )
+from siem.risk import SEVERITY_WEIGHT
+
+_SEVERITY_RANK = {sev.value: idx for idx, sev in enumerate(SEVERITY_ORDER)}
+ATTACKER_PROFILES_CURSOR = "attacker_profiles"
 
 GRANULARITY_FORMAT = {
     "hour": "%Y-%m-%d %H:00",
@@ -92,6 +99,68 @@ def _row_to_event(row: EventDB) -> Event:
         raw_payload=row.raw_payload or {}, timestamp=row.timestamp, incident_id=row.incident_id,
         threat_ids=row.threat_ids or [],
     )
+
+
+def _merge_event_into_profile(profile: AttackerProfileDB, event: EventDB) -> None:
+    """Reduce un evento WAF más al perfil acumulado de su IP -- nunca relee
+    los eventos ya mezclados, así que todo lo que hace falta para
+    reconocer patrones (reincidencia, nº de categorías, nº de días
+    activos) tiene que quedar guardado aquí, no derivarse después de los
+    eventos crudos."""
+    payload = event.raw_payload or {}
+    profile.country = payload.get("country") or profile.country
+    profile.asn = payload.get("asn") or profile.asn
+    profile.asn_org = payload.get("asn_org") or profile.asn_org
+    profile.event_count = (profile.event_count or 0) + 1
+
+    severity_counts = dict(profile.severity_counts or {})
+    severity_counts[event.severity] = severity_counts.get(event.severity, 0) + 1
+    profile.severity_counts = severity_counts
+    profile.max_severity = max(severity_counts, key=lambda s: _SEVERITY_RANK.get(s, -1))
+    profile.threat_score = min(100, sum(SEVERITY_WEIGHT.get(sev, 5) * n for sev, n in severity_counts.items()))
+
+    category = payload.get("attack_category")
+    if category:
+        categories = set(profile.attack_categories or [])
+        categories.add(category)
+        profile.attack_categories = sorted(categories)
+
+    if event.timestamp is not None:
+        day = event.timestamp.strftime("%Y-%m-%d")
+        days = set(profile.active_days or [])
+        days.add(day)
+        profile.active_days = sorted(days)
+
+    if profile.first_seen is None or (event.timestamp is not None and event.timestamp < profile.first_seen):
+        profile.first_seen = event.timestamp
+    if profile.last_seen is None or (event.timestamp is not None and event.timestamp >= profile.last_seen):
+        profile.last_seen = event.timestamp
+        profile.last_host = payload.get("host")
+        profile.last_uri = payload.get("uri")
+        profile.last_user_agent = payload.get("user_agent")
+        profile.referer_host = payload.get("referer_host")
+
+    profile.updated_at = dt.datetime.utcnow()
+
+
+def _row_to_attacker_profile(row: AttackerProfileDB) -> dict:
+    return {
+        "ip": row.ip,
+        "country": row.country,
+        "asn": row.asn,
+        "asn_org": row.asn_org,
+        "event_count": row.event_count or 0,
+        "attack_categories": row.attack_categories or [],
+        "max_severity": row.max_severity or "info",
+        "threat_score": row.threat_score or 0,
+        "active_days": row.active_days or [],
+        "first_seen": row.first_seen,
+        "last_seen": row.last_seen,
+        "last_host": row.last_host,
+        "last_uri": row.last_uri,
+        "last_user_agent": row.last_user_agent,
+        "referer_host": row.referer_host,
+    }
 
 
 def _incident_fields(incident: Incident) -> dict:
@@ -250,6 +319,65 @@ class SiemStore:
     def list_events(self, limit: int = 200) -> List[Event]:
         rows = self.db.query(EventDB).order_by(EventDB.timestamp.desc()).limit(limit).all()
         return [_row_to_event(r) for r in rows]
+
+    # -- Perfiles de atacante (siem/attacker_aggregator.py) -------------------
+    def aggregate_attacker_profiles(self, batch_size: int = 2000) -> int:
+        """Procesa hasta `batch_size` eventos WAF nuevos (desde el cursor
+        guardado en aggregator_cursor) y actualiza attacker_profiles.
+        Devuelve cuántos eventos procesó -- 0 significa "ya está al día".
+
+        Incremental a propósito: nunca vuelve a leer un evento ya agregado,
+        así el coste de cada tick es O(eventos nuevos) y no O(eventos
+        totales) -- ver docstring de siem/attacker_aggregator.py para el
+        porqué (agrupar en memoria en cada petición no escala a miles de
+        IPs distintas).
+        """
+        cursor = self.db.get(AggregatorCursorDB, ATTACKER_PROFILES_CURSOR)
+        query = self.db.query(EventDB).filter(EventDB.source.in_(WAF_SOURCES))
+        if cursor is not None and cursor.last_event_timestamp is not None:
+            query = query.filter(
+                or_(
+                    EventDB.timestamp > cursor.last_event_timestamp,
+                    and_(
+                        EventDB.timestamp == cursor.last_event_timestamp,
+                        EventDB.id > (cursor.last_event_id or ""),
+                    ),
+                )
+            )
+        events = query.order_by(EventDB.timestamp.asc(), EventDB.id.asc()).limit(batch_size).all()
+        if not events:
+            return 0
+
+        profiles: dict[str, AttackerProfileDB] = {}
+        for event in events:
+            ip = (event.raw_payload or {}).get("client_ip")
+            if not ip:
+                continue
+            profile = profiles.get(ip) or self.db.get(AttackerProfileDB, ip)
+            if profile is None:
+                profile = AttackerProfileDB(
+                    ip=ip, severity_counts={}, attack_categories=[], active_days=[],
+                )
+                self.db.add(profile)
+            _merge_event_into_profile(profile, event)
+            profiles[ip] = profile
+
+        if cursor is None:
+            cursor = AggregatorCursorDB(name=ATTACKER_PROFILES_CURSOR)
+            self.db.add(cursor)
+        cursor.last_event_timestamp = events[-1].timestamp
+        cursor.last_event_id = events[-1].id
+        self.db.commit()
+        return len(events)
+
+    def list_attacker_profiles(self, limit: int = 100) -> List[dict]:
+        rows = (
+            self.db.query(AttackerProfileDB)
+            .order_by(AttackerProfileDB.threat_score.desc())
+            .limit(limit)
+            .all()
+        )
+        return [_row_to_attacker_profile(r) for r in rows]
 
     # -- Incidents -----------------------------------------------------------
     def add_incident(self, incident: Incident) -> Incident:

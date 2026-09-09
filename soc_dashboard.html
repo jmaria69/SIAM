@@ -1889,20 +1889,73 @@ const STATUS_STYLE = {
   activa: 'bg-rose-950 text-rose-300 border border-rose-800',
 };
 const ATTACKER_STATUS_LABEL = { bloqueada: '● Bloqueada', lista_blanca: '○ Lista blanca', activa: '● Activa' };
+const PATTERN_FLAG_LABEL = {
+  reincidente: 'Reincidente',
+  multi_categoria: 'Multi-categoría',
+  persistente: 'Persistente',
+};
+const PATTERN_FLAG_TITLE = {
+  reincidente: 'Ha generado muchos eventos WAF -- ya no es ruido puntual.',
+  multi_categoria: 'Prueba varias categorías de ataque distintas -- sugiere reconocimiento/escaneo, no un único intento.',
+  persistente: 'Activo en varios días distintos -- descarta un pico aislado.',
+};
+const PATTERN_FLAG_STYLE = 'bg-amber-950 text-amber-300 border border-amber-800';
 
 function ActiveDefensePanel() {
   const [overview, setOverview] = useState(null);
   const [eventLimit, setEventLimit] = useState(10);
+  const [attackerLimit, setAttackerLimit] = useState(10);
   const [responding, setResponding] = useState(null); // ip en curso, para desactivar botones
   const [expanded, setExpanded] = useState(null); // ip con detalle de huella abierto
   const [whitelist, setWhitelist] = useState([]);
   const [blacklist, setBlacklist] = useState([]);
+  const [selectedIps, setSelectedIps] = useState(new Set()); // cualquier IP marcada, bloqueada o no
+  const [bulkUnblocking, setBulkUnblocking] = useState(false);
+  const [bulkAction, setBulkAction] = useState('BLOCK');
+  const [bulkApplying, setBulkApplying] = useState(false);
+  const [rowAction, setRowAction] = useState({}); // ip -> acción elegida en el select de esa fila (por defecto BLOCK)
   const [newWlIp, setNewWlIp] = useState('');
   const [newWlReason, setNewWlReason] = useState('');
+  const [blacklistLimit, setBlacklistLimit] = useState(10);
+  const [sortBy, setSortBy] = useState(null); // columna de ordenación de la tabla de atacantes, null = orden del backend
+  const [sortDir, setSortDir] = useState('desc');
+
+  function toggleSort(column) {
+    if (sortBy === column) {
+      setSortDir((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+    } else {
+      setSortBy(column);
+      setSortDir('desc');
+    }
+  }
+
+  function sortAttackers(attackers) {
+    if (!sortBy) return attackers;
+    const rank = { critica: 4, alta: 3, media: 2, baja: 1, info: 0 };
+    const statusRank = { activa: 2, bloqueada: 1, lista_blanca: 0 };
+    const keyFns = {
+      ip: (a) => a.ip,
+      country: (a) => `${a.country || ''} ${a.asn || ''}`.trim().toLowerCase(),
+      events: (a) => a.event_count || 0,
+      severity: (a) => rank[a.max_severity] ?? -1,
+      status: (a) => statusRank[a.status] ?? -1,
+      suggested: (a) => RESPONSE_ACTION_LABEL[a.suggested_action] || a.suggested_action || '',
+      action: (a) => rowAction[a.ip] || 'BLOCK',
+    };
+    const keyFn = keyFns[sortBy];
+    if (!keyFn) return attackers;
+    const sorted = [...attackers].sort((a, b) => {
+      const ka = keyFn(a), kb = keyFn(b);
+      if (ka < kb) return -1;
+      if (ka > kb) return 1;
+      return 0;
+    });
+    return sortDir === 'desc' ? sorted.reverse() : sorted;
+  }
 
   async function load() {
     try {
-      const res = await fetch(`/v1/active-defense/overview?event_limit=${eventLimit}`);
+      const res = await fetch(`/v1/active-defense/overview?event_limit=${eventLimit}&attacker_limit=${attackerLimit}`);
       if (res.ok) setOverview(await res.json());
     } catch (err) { console.error(err); }
   }
@@ -1923,7 +1976,7 @@ function ActiveDefensePanel() {
     loadLists();
     const id = setInterval(load, 5000);
     return () => clearInterval(id);
-  }, [eventLimit]);
+  }, [eventLimit, attackerLimit]);
 
   async function responder(ip, action) {
     if (!window.confirm(`¿Ejecutar "${RESPONSE_ACTION_LABEL[action]}" sobre ${ip}? Esta acción queda registrada como IOC confirmado.`)) return;
@@ -1956,12 +2009,229 @@ function ActiveDefensePanel() {
     await Promise.all([load(), loadLists()]);
   }
 
+  function toggleSelect(ip) {
+    setSelectedIps(prev => {
+      const next = new Set(prev);
+      if (next.has(ip)) next.delete(ip); else next.add(ip);
+      return next;
+    });
+  }
+
+  function toggleSelectAllVisible(attackers) {
+    setSelectedIps(prev => {
+      const allSelected = attackers.length > 0 && attackers.every(a => prev.has(a.ip));
+      return allSelected ? new Set() : new Set(attackers.map(a => a.ip));
+    });
+  }
+
+  async function bulkUnblock(blockedByIp) {
+    const ids = [...selectedIps].map(ip => blockedByIp[ip]?.id).filter(Boolean);
+    if (ids.length === 0) return;
+    if (!window.confirm(`¿Desbloquear ${ids.length} IP(s) seleccionada(s)?`)) return;
+    setBulkUnblocking(true);
+    try {
+      await Promise.all(ids.map(id => fetch(`/v1/active-defense/blacklist/${id}`, { method: 'DELETE' })));
+      setSelectedIps(new Set());
+      await Promise.all([load(), loadLists()]);
+    } finally {
+      setBulkUnblocking(false);
+    }
+  }
+
+  async function bulkApply(action, attackers) {
+    const targets = attackers.filter(a => selectedIps.has(a.ip) && a.status !== 'lista_blanca');
+    if (targets.length === 0) return;
+    if (!window.confirm(`¿Ejecutar "${RESPONSE_ACTION_LABEL[action]}" sobre ${targets.length} IP(s) seleccionada(s)? Esta acción queda registrada como IOC confirmado.`)) return;
+    setBulkApplying(true);
+    try {
+      await Promise.all(targets.map(a =>
+        fetch(`/v1/active-defense/respond?ip=${encodeURIComponent(a.ip)}&action=${action}&confirm=true`, { method: 'POST' })
+      ));
+      setSelectedIps(new Set());
+      await Promise.all([load(), loadLists()]);
+    } finally {
+      setBulkApplying(false);
+    }
+  }
+
+  function attackersForExport(attackers) {
+    return selectedIps.size === 0 ? attackers : attackers.filter(a => selectedIps.has(a.ip));
+  }
+
+  function exportCsv(attackers, blockedByIp) {
+    const list = attackersForExport(attackers);
+    if (list.length === 0) return;
+    const headers = ['IP', 'País', 'ASN', 'Organización ASN', 'Eventos', 'Severidad', 'Estado', 'Acción sugerida', 'Acción ejecutada', 'Primera actividad', 'Última actividad'];
+    const rows = list.map(a => {
+      const blocked = blockedByIp[a.ip];
+      return [
+        a.ip, a.country || '', a.asn || '', a.asn_org || '', a.event_count, a.max_severity,
+        ATTACKER_STATUS_LABEL[a.status] || a.status, RESPONSE_ACTION_LABEL[a.suggested_action] || a.suggested_action,
+        blocked ? (RESPONSE_ACTION_LABEL[blocked.action] || blocked.action) : '',
+        a.first_seen ? new Date(a.first_seen).toLocaleString('es-ES') : '',
+        a.last_seen ? new Date(a.last_seen).toLocaleString('es-ES') : '',
+      ];
+    });
+    const csv = [headers, ...rows]
+      .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
+      .join('\r\n');
+    // BOM al inicio -- sin él, Excel interpreta el CSV como Latin-1 y rompe tildes/ñ.
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `atacantes_siam_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  function exportPdf(attackers, blockedByIp) {
+    const list = attackersForExport(attackers);
+    if (list.length === 0) return;
+    const generado = new Date().toLocaleString('es-ES');
+    const filas = list.map(a => {
+      const blocked = blockedByIp[a.ip];
+      const accion = blocked ? (RESPONSE_ACTION_LABEL[blocked.action] || blocked.action) : 'Ninguna (solo sugerida)';
+      return `<tr>
+        <td class="mono">${a.ip}</td>
+        <td>${a.country || '—'}</td>
+        <td>${a.event_count}</td>
+        <td>${a.max_severity}</td>
+        <td>${ATTACKER_STATUS_LABEL[a.status] || a.status}</td>
+        <td>${accion}</td>
+        <td>${a.last_seen ? new Date(a.last_seen).toLocaleString('es-ES') : '—'}</td>
+      </tr>`;
+    }).join('');
+    const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8" />
+      <title>Informe de atacantes — SIAM</title>
+      <style>
+        body { font-family: system-ui, sans-serif; color: #1a1a2e; padding: 32px; }
+        h1 { font-size: 20px; margin-bottom: 4px; }
+        .sub { color: #666; font-size: 12px; margin-bottom: 24px; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #ddd; }
+        th { background: #f0f0f5; }
+        .mono { font-family: monospace; }
+        @media print { body { padding: 0; } }
+      </style></head><body>
+      <h1>Informe de atacantes — SIAM Active Defense</h1>
+      <div class="sub">Generado el ${generado} · ${list.length} IP(s)</div>
+      <table>
+        <thead><tr><th>IP</th><th>País</th><th>Eventos</th><th>Severidad</th><th>Estado</th><th>Acción ejecutada</th><th>Última actividad</th></tr></thead>
+        <tbody>${filas}</tbody>
+      </table>
+    </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) { window.alert('El navegador bloqueó la ventana emergente. Permite pop-ups para generar el informe.'); return; }
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => w.print(), 300);
+  }
+
+  const ACTION_NEXT_STEPS = {
+    BLOCK: [
+      'La IP fue bloqueada mediante una IP Access Rule en Cloudflare: recibe 403 automático en el edge, antes de llegar al origen.',
+      'No se requiere acción manual adicional salvo que el atacante rote de IP -- en ese caso repite el proceso desde este panel.',
+      'Si la misma organización/ASN insiste con IPs distintas, valora bloquear el rango completo en Cloudflare.',
+    ],
+    RATE_LIMIT: [
+      'La IP queda sujeta al Worker de rate limiting (Rate Limiting API de Cloudflare Workers, no la regla nativa): más peticiones que el umbral configurado en una misma ventana reciben 429.',
+      'Si el atacante insiste tras el rate limit, escala a "Bloquear" para un corte total.',
+      'La lista de IPs limitadas se sincroniza vía Workers KV; el cambio puede tardar hasta 60s en propagarse por colocación de Cloudflare.',
+    ],
+    CHALLENGE: [
+      'La IP recibe un reto (CAPTCHA/JS challenge) antes de llegar al origen.',
+      'Si un usuario legítimo se ve afectado por error, añádelo a la lista blanca desde este panel.',
+      'Si el atacante supera el reto de forma automatizada, escala a "Bloquear".',
+    ],
+    HONEYPOT: [
+      'La IP se redirige a un panel señuelo del propio SIAM en vez de al sitio real.',
+      'Cualquier interacción posterior desde esa IP queda registrada como inteligencia del atacante (herramientas, TTPs).',
+      'No revela al atacante que fue detectado -- útil para observar su comportamiento sin exponer el sitio real.',
+    ],
+  };
+
+  function pasosSinAccion(suggestedAction) {
+    return [
+      'Aún no se ha confirmado ninguna acción sobre esta IP desde el SOC.',
+      `Acción sugerida automáticamente por severidad: "${RESPONSE_ACTION_LABEL[suggestedAction] || suggestedAction}".`,
+      'Confirma una acción desde el panel de Atacantes para que quede aplicada de verdad y registrada en este informe.',
+    ];
+  }
+
+  function abrirInforme(a, blockedEntry) {
+    const steps = a.status === 'lista_blanca'
+      ? ['Esta IP está en la lista blanca: Active Defense nunca la bloqueará automáticamente.', 'Si crees que es un error, quítala de la lista blanca desde este panel.']
+      : blockedEntry
+        ? (ACTION_NEXT_STEPS[blockedEntry.action] || pasosSinAccion(a.suggested_action))
+        : pasosSinAccion(a.suggested_action);
+
+    const generado = new Date().toLocaleString('es-ES');
+    const primera = a.first_seen ? new Date(a.first_seen).toLocaleString('es-ES') : '—';
+    const ultima = a.last_seen ? new Date(a.last_seen).toLocaleString('es-ES') : '—';
+    const accionEjecutada = blockedEntry ? (RESPONSE_ACTION_LABEL[blockedEntry.action] || blockedEntry.action) : 'Ninguna (solo sugerida)';
+
+    const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8" />
+      <title>Informe de incidente — ${a.ip}</title>
+      <style>
+        body { font-family: system-ui, sans-serif; color: #1a1a2e; padding: 32px; max-width: 720px; margin: 0 auto; }
+        h1 { font-size: 20px; margin-bottom: 4px; }
+        .sub { color: #666; font-size: 12px; margin-bottom: 24px; }
+        h2 { font-size: 14px; margin-top: 24px; margin-bottom: 8px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        td { padding: 4px 0; vertical-align: top; }
+        td:first-child { color: #666; width: 180px; }
+        ol { font-size: 13px; padding-left: 18px; }
+        ol li { margin-bottom: 6px; }
+        .mono { font-family: monospace; }
+        @media print { body { padding: 0; } }
+      </style></head><body>
+      <h1>Informe de incidente — SIAM Active Defense</h1>
+      <div class="sub">Generado el ${generado} · IP <span class="mono">${a.ip}</span></div>
+
+      <h2>Resumen</h2>
+      <table>
+        <tr><td>IP atacante</td><td class="mono">${a.ip}</td></tr>
+        <tr><td>País / ASN</td><td>${a.country || '—'} ${a.asn ? '· ' + a.asn : ''} ${a.asn_org ? '(' + a.asn_org + ')' : ''}</td></tr>
+        <tr><td>Primera actividad</td><td>${primera}</td></tr>
+        <tr><td>Última actividad</td><td>${ultima}</td></tr>
+        <tr><td>Eventos WAF</td><td>${a.event_count}</td></tr>
+        <tr><td>Severidad máxima</td><td>${a.max_severity}</td></tr>
+        <tr><td>Estado actual</td><td>${ATTACKER_STATUS_LABEL[a.status] || a.status}</td></tr>
+        <tr><td>Acción ejecutada</td><td>${accionEjecutada}</td></tr>
+      </table>
+
+      <h2>Detalle técnico</h2>
+      <table>
+        <tr><td>Host / ruta atacada</td><td>${a.last_host || '—'} ${a.last_uri || ''}</td></tr>
+        <tr><td>User-Agent</td><td class="mono">${a.last_user_agent || '—'}</td></tr>
+        <tr><td>Referer</td><td>${a.referer_host || '—'}</td></tr>
+        <tr><td>Categorías de ataque</td><td>${(a.attack_categories || []).join(', ') || '—'}</td></tr>
+      </table>
+
+      <h2>Próximos pasos</h2>
+      <ol>${steps.map(s => `<li>${s}</li>`).join('')}</ol>
+    </body></html>`;
+
+    const w = window.open('', '_blank');
+    if (!w) { window.alert('El navegador bloqueó la ventana emergente. Permite pop-ups para generar el informe.'); return; }
+    w.document.write(html);
+    w.document.close();
+    setTimeout(() => w.print(), 300);
+  }
+
   if (!overview) return <div className="text-slate-500 italic p-6">Cargando...</div>;
+
+  const blockedByIp = {};
+  blacklist.forEach((entry) => { blockedByIp[entry.value] = entry; });
+  const attackersSorted = sortAttackers(overview.attackers);
 
   return (
     <div>
       <div className="bg-blue-950 border border-blue-800 text-blue-200 text-xs rounded-lg px-4 py-2 mb-6">
-        ⚔️ Módulo premium — Response Engine sobre el WAAP híbrido (Cloudflare + Coraza). BLOCK/CHALLENGE/HONEYPOT se ejecutan de verdad en Cloudflare si hay token configurado: BLOCK/CHALLENGE crean una IP Access Rule por IP; HONEYPOT actualiza una regla compartida por zona que redirige al atacante a un panel señuelo del propio SIAM. RATE LIMIT se queda simulado: el plan actual de Cloudflare no permite filtrar una regla de rate limiting por IP (hace falta plan Business o superior). En todos los casos, cada acción confirmada queda registrada como IOC (lista negra) y se refleja aquí como "Bloqueada".
+        ⚔️ Módulo premium — Response Engine sobre el WAAP híbrido (Cloudflare + Coraza). BLOCK/CHALLENGE/HONEYPOT se ejecutan de verdad en Cloudflare si hay token configurado: BLOCK/CHALLENGE crean una IP Access Rule por IP; HONEYPOT actualiza una regla compartida por zona que redirige al atacante a un panel señuelo del propio SIAM. RATE LIMIT también se ejecuta de verdad vía un Worker propio (Rate Limiting API de Cloudflare Workers, no la regla nativa de Rulesets que exige plan Business+): la IP se sincroniza a una lista en Workers KV y el Worker le aplica el límite de peticiones. En todos los casos, cada acción confirmada queda registrada como IOC (lista negra) y se refleja aquí como "Bloqueada".
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
@@ -2017,27 +2287,97 @@ function ActiveDefensePanel() {
       ) : (
         <>
           <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg overflow-hidden mb-6">
-            <h2 className="text-lg font-semibold p-4 pb-0">Atacantes</h2>
-            <div className="hidden sm:grid sm:grid-cols-7 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 px-4 py-2 mt-3 items-center">
-              <div>IP</div><div>País / ASN</div><div>Eventos</div><div>Severidad</div><div>Estado</div><div>Sugerido</div><div>Acción</div>
+            <div className="flex flex-wrap items-center justify-between gap-3 p-4 pb-0">
+              <h2 className="text-lg font-semibold">Atacantes</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedIps.size > 0 && (
+                  <>
+                    <select value={bulkAction} onChange={(e) => setBulkAction(e.target.value)}
+                      className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+                      {['BLOCK', 'RATE_LIMIT', 'CHALLENGE', 'HONEYPOT'].map((action) => (
+                        <option key={action} value={action}>{RESPONSE_ACTION_LABEL[action]}</option>
+                      ))}
+                    </select>
+                    <button onClick={() => bulkApply(bulkAction, attackersSorted)} disabled={bulkApplying}
+                      className="text-xs px-3 py-1.5 rounded border border-blue-700 text-blue-300 hover:bg-blue-900/40 disabled:opacity-50">
+                      {bulkApplying ? 'Aplicando...' : `Aplicar a seleccionadas (${selectedIps.size})`}
+                    </button>
+                    <button onClick={() => bulkUnblock(blockedByIp)} disabled={bulkUnblocking}
+                      className="text-xs px-3 py-1.5 rounded border border-emerald-700 text-emerald-300 hover:bg-emerald-900/40 disabled:opacity-50">
+                      {bulkUnblocking ? 'Desbloqueando...' : 'Desbloquear seleccionadas'}
+                    </button>
+                  </>
+                )}
+                <button onClick={() => exportCsv(attackersSorted, blockedByIp)}
+                  className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
+                  Exportar Excel/CSV
+                </button>
+                <button onClick={() => exportPdf(attackersSorted, blockedByIp)}
+                  className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
+                  Exportar PDF
+                </button>
+                <label className="flex items-center gap-2 text-xs text-slate-400">
+                  Ver
+                  <select value={attackerLimit} onChange={(e) => setAttackerLimit(Number(e.target.value))}
+                    className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+                    <option value={10}>10 atacantes</option>
+                    <option value={30}>30 atacantes</option>
+                    <option value={100}>100 atacantes</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="hidden sm:grid sm:grid-cols-8 gap-2 text-xs font-bold text-slate-500 border-b border-slate-800 px-4 py-2 mt-3 items-center">
+              <div>
+                <input type="checkbox"
+                  checked={attackersSorted.length > 0 && attackersSorted.every((a) => selectedIps.has(a.ip))}
+                  onChange={() => toggleSelectAllVisible(attackersSorted)}
+                  title="Seleccionar todas" className="h-3.5 w-3.5" />
+              </div>
+              {[
+                ['ip', 'IP'], ['country', 'País / ASN'], ['events', 'Eventos'], ['severity', 'Severidad'],
+                ['status', 'Estado'], ['suggested', 'Sugerido'], ['action', 'Acción'],
+              ].map(([col, label]) => (
+                <button key={col} onClick={() => toggleSort(col)}
+                  className={`flex items-center gap-1 text-left hover:text-slate-300 ${sortBy === col ? 'text-slate-200' : ''}`}>
+                  {label}{sortBy === col && (sortDir === 'desc' ? ' ▼' : ' ▲')}
+                </button>
+              ))}
             </div>
             <div className="max-h-[32rem] overflow-y-auto">
-            {overview.attackers.map((a) => {
+            {attackersSorted.map((a) => {
               const isWhitelisted = a.status === 'lista_blanca';
               const blockedEntry = blacklist.find((entry) => entry.value === a.ip);
               const isOpen = expanded === a.ip;
+              const rowActionValue = rowAction[a.ip] || 'BLOCK';
               return (
               <div key={a.ip} className="border-b border-slate-900">
-                <div className="flex flex-col gap-2 sm:grid sm:grid-cols-7 sm:gap-2 sm:items-center px-4 py-3 text-sm">
-                  <button className="font-mono text-left hover:underline decoration-dotted" onClick={() => setExpanded(isOpen ? null : a.ip)} title="Ver huella del atacante">
-                    {a.ip}
-                  </button>
+                <div className="flex flex-col gap-2 sm:grid sm:grid-cols-8 sm:gap-2 sm:items-center px-4 py-3 text-sm">
+                  <div className="flex items-center">
+                    <input type="checkbox" checked={selectedIps.has(a.ip)} onChange={() => toggleSelect(a.ip)}
+                      title="Seleccionar" className="h-3.5 w-3.5" />
+                  </div>
+                  <div>
+                    <button className="font-mono text-left hover:underline decoration-dotted" onClick={() => setExpanded(isOpen ? null : a.ip)} title="Ver huella del atacante">
+                      {a.ip}
+                    </button>
+                    {a.pattern_flags && a.pattern_flags.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {a.pattern_flags.map((flag) => (
+                          <span key={flag} title={PATTERN_FLAG_TITLE[flag] || ''}
+                            className={`px-1.5 py-0.5 rounded text-[10px] leading-none ${PATTERN_FLAG_STYLE}`}>
+                            {PATTERN_FLAG_LABEL[flag] || flag}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <div className="text-slate-400 text-xs">{a.country || '—'} {a.asn ? `· ${a.asn}` : ''}</div>
                   <div>{a.event_count}</div>
                   <div><span className={`px-1.5 py-0.5 rounded text-xs ${SEVERITY_STYLE[a.max_severity] || ''}`}>{a.max_severity}</span></div>
                   <div><span className={`px-1.5 py-0.5 rounded text-xs whitespace-nowrap ${STATUS_STYLE[a.status] || ''}`}>{ATTACKER_STATUS_LABEL[a.status] || a.status}</span></div>
                   <div className="text-xs text-slate-400">{RESPONSE_ACTION_LABEL[a.suggested_action]}</div>
-                  <div className="flex flex-wrap gap-1">
+                  <div className="flex flex-wrap items-center gap-1">
                     {a.status === 'bloqueada' && blockedEntry ? (
                       <button onClick={() => removeBlacklist(blockedEntry.id)}
                         className="text-xs px-2 py-1 rounded border border-emerald-700 text-emerald-300 hover:bg-emerald-900/40">
@@ -2045,20 +2385,51 @@ function ActiveDefensePanel() {
                       </button>
                     ) : isWhitelisted ? (
                       <span className="text-xs text-slate-500 italic">en lista blanca</span>
-                    ) : ['BLOCK', 'RATE_LIMIT', 'CHALLENGE', 'HONEYPOT'].map((action) => (
-                      <button key={action} disabled={responding === a.ip} onClick={() => responder(a.ip, action)}
-                        className={`text-xs px-2 py-1 rounded border disabled:opacity-50 ${action === a.suggested_action ? 'bg-blue-600 border-blue-500 text-white' : 'border-slate-700 hover:bg-slate-800'}`}>
-                        {RESPONSE_ACTION_LABEL[action]}
-                      </button>
-                    ))}
+                    ) : (
+                      <>
+                        <button disabled={responding === a.ip} onClick={() => responder(a.ip, rowActionValue)}
+                          className="text-xs px-2 py-1 rounded border bg-blue-600 border-blue-500 text-white disabled:opacity-50">
+                          {RESPONSE_ACTION_LABEL[rowActionValue]}
+                        </button>
+                        <select value={rowActionValue}
+                          onChange={(e) => setRowAction((prev) => ({ ...prev, [a.ip]: e.target.value }))}
+                          className="bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs text-slate-200">
+                          {['BLOCK', 'RATE_LIMIT', 'CHALLENGE', 'HONEYPOT'].map((action) => (
+                            <option key={action} value={action}>{RESPONSE_ACTION_LABEL[action]}</option>
+                          ))}
+                        </select>
+                      </>
+                    )}
+                    <button onClick={() => abrirInforme(a, blockedEntry)}
+                      className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
+                      Informe
+                    </button>
                   </div>
                 </div>
                 {isOpen && (
                   <div className="mx-4 mb-3 p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 text-slate-300">
+                    <div><span className="text-slate-500">Primera actividad:</span> {a.first_seen ? new Date(a.first_seen).toLocaleString('es-ES') : '—'}</div>
+                    <div><span className="text-slate-500">Última actividad:</span> {a.last_seen ? new Date(a.last_seen).toLocaleString('es-ES') : '—'}</div>
                     <div><span className="text-slate-500">Host / ruta atacada:</span> {a.last_host || '—'} {a.last_uri || ''}</div>
                     <div><span className="text-slate-500">Organización ASN:</span> {a.asn_org || '—'}</div>
                     <div><span className="text-slate-500">User-Agent:</span> {a.last_user_agent || '—'}</div>
                     <div><span className="text-slate-500">Referer:</span> {a.referer_host || '—'}</div>
+                    {!(a.status === 'bloqueada' && blockedEntry) && !isWhitelisted && (
+                      <div className="sm:col-span-2 flex items-center gap-1 pt-1 border-t border-slate-900 mt-1">
+                        <span className="text-slate-500 mr-1">Acción:</span>
+                        <button disabled={responding === a.ip} onClick={() => responder(a.ip, rowActionValue)}
+                          className="text-xs px-2 py-1 rounded border bg-blue-600 border-blue-500 text-white disabled:opacity-50">
+                          {RESPONSE_ACTION_LABEL[rowActionValue]}
+                        </button>
+                        <select value={rowActionValue}
+                          onChange={(e) => setRowAction((prev) => ({ ...prev, [a.ip]: e.target.value }))}
+                          className="bg-slate-800 border border-slate-700 rounded px-1 py-1 text-xs text-slate-200">
+                          {['BLOCK', 'RATE_LIMIT', 'CHALLENGE', 'HONEYPOT'].map((action) => (
+                            <option key={action} value={action}>{RESPONSE_ACTION_LABEL[action]}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -2091,9 +2462,20 @@ function ActiveDefensePanel() {
 
           {blacklist.length > 0 && (
             <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
-              <h2 className="text-lg font-semibold mb-3">Lista negra (bloqueadas confirmadas)</h2>
-              <div className="space-y-1">
-                {blacklist.map((b) => (
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                <h2 className="text-lg font-semibold">Lista negra (bloqueadas confirmadas)</h2>
+                <label className="flex items-center gap-2 text-xs text-slate-400">
+                  Ver
+                  <select value={blacklistLimit} onChange={(e) => setBlacklistLimit(Number(e.target.value))}
+                    className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+                    <option value={10}>10</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </label>
+              </div>
+              <div className="space-y-1 max-h-80 overflow-y-auto pr-1">
+                {blacklist.slice(0, blacklistLimit).map((b) => (
                   <div key={b.id} className="flex justify-between items-center text-sm border-b border-slate-900 pb-1">
                     <span className="font-mono">{b.value} <span className="text-slate-500 text-xs">{b.campaign ? `— ${b.campaign}` : ''}</span></span>
                     <button onClick={() => removeBlacklist(b.id)} className="text-xs text-rose-400 hover:text-rose-300">Desbloquear</button>

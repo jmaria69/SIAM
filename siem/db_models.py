@@ -122,6 +122,51 @@ class DemoLeadDB(Base):
     notified = Column(Boolean, default=False)  # si se pudo avisar por email a ALERT_EMAIL_TO
 
 
+class AttackerProfileDB(Base):
+    """Resumen incremental por IP atacante, mantenido por
+    siem/attacker_aggregator.py -- ver su docstring para el porqué (evitar
+    reagrupar todos los eventos WAF en memoria en cada petición a
+    /v1/active-defense/overview cuando hay miles de IPs distintas).
+
+    severity_counts/attack_categories/active_days se guardan ya reducidos
+    (conteos/sets, no la lista de eventos crudos) para que el perfil quepa
+    en una fila sin importar cuántos eventos WAF haya detrás. threat_score
+    se recalcula en cada evento nuevo con la misma fórmula que
+    active_defense.compute_threat_score, así ORDER BY threat_score en SQL
+    da el mismo orden que antes se calculaba en Python.
+    """
+    __tablename__ = "attacker_profiles"
+    ip = Column(String, primary_key=True)
+    country = Column(String, nullable=True)
+    asn = Column(String, nullable=True)
+    asn_org = Column(String, nullable=True)
+    event_count = Column(Integer, default=0)
+    severity_counts = Column(JSON, default=dict)  # {"critica": 2, "alta": 5, ...}
+    max_severity = Column(String, default="info")
+    attack_categories = Column(JSON, default=list)
+    active_days = Column(JSON, default=list)  # "YYYY-MM-DD" distintos con actividad -- señal de persistencia
+    threat_score = Column(Integer, default=0, index=True)
+    first_seen = Column(DateTime, nullable=True)
+    last_seen = Column(DateTime, nullable=True)
+    last_host = Column(String, nullable=True)
+    last_uri = Column(String, nullable=True)
+    last_user_agent = Column(String, nullable=True)
+    referer_host = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=dt.datetime.utcnow)
+
+
+class AggregatorCursorDB(Base):
+    """Punto por donde se quedó cada agregador incremental (una fila por
+    `name`). Vive en base de datos, no en memoria del proceso, por el mismo
+    motivo que ya documentó campaign_scheduler.py sobre starts_at: si el
+    servidor se reinicia, el siguiente tick retoma justo donde lo dejó en
+    vez de perder el progreso o reprocesar todo desde cero."""
+    __tablename__ = "aggregator_cursor"
+    name = Column(String, primary_key=True)
+    last_event_timestamp = Column(DateTime, nullable=True)
+    last_event_id = Column(String, nullable=True)
+
+
 class CampaignDB(Base):
     __tablename__ = "campaigns"
     id = Column(String, primary_key=True)

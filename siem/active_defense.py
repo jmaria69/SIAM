@@ -22,7 +22,11 @@ from siem.risk import SEVERITY_WEIGHT
 
 RESPONSE_ACTIONS = ["BLOCK", "RATE_LIMIT", "CHALLENGE", "HONEYPOT"]
 
-_SEVERITY_ORDER = [Severity.INFO, Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL]
+# Pública (sin guión bajo) porque siem/store.py también la necesita para
+# decidir, evento a evento, si la severidad nueva supera al max_severity ya
+# guardado en AttackerProfileDB -- ver siem/attacker_aggregator.py.
+SEVERITY_ORDER = [Severity.INFO, Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL]
+_SEVERITY_ORDER = SEVERITY_ORDER
 
 _ACTION_BY_SEVERITY = {
     Severity.CRITICAL: "BLOCK",
@@ -114,6 +118,72 @@ def list_attackers(
         })
     attackers.sort(key=lambda a: a["threat_score"], reverse=True)
     return attackers
+
+
+# Umbrales de reconocimiento de patrones sobre el perfil acumulado de cada
+# IP (siem/attacker_aggregator.py). Deliberadamente deterministas y sin ML,
+# mismo criterio que suggest_response: para una pyme, un umbral que se puede
+# explicar en una frase vale más que un modelo que nadie puede auditar.
+PATTERN_REPEAT_OFFENDER_EVENTS = 10  # nº de eventos WAF a partir del cual una IP deja de ser "ruido"
+PATTERN_MULTI_CATEGORY_CATEGORIES = 3  # nº de categorías de ataque distintas -- sugiere reconocimiento/escaneo, no un único intento
+PATTERN_PERSISTENT_ACTIVE_DAYS = 3  # nº de días distintos con actividad -- descarta un pico aislado
+
+
+def pattern_flags(profile: dict) -> list[str]:
+    """Señales derivadas del perfil acumulado de una IP (no de una ventana
+    de eventos puntual) -- solo visibles una vez que attacker_aggregator ha
+    procesado suficiente histórico como para que dejen de ser ruido."""
+    flags = []
+    if profile.get("event_count", 0) >= PATTERN_REPEAT_OFFENDER_EVENTS:
+        flags.append("reincidente")
+    if len(profile.get("attack_categories") or []) >= PATTERN_MULTI_CATEGORY_CATEGORIES:
+        flags.append("multi_categoria")
+    if len(profile.get("active_days") or []) >= PATTERN_PERSISTENT_ACTIVE_DAYS:
+        flags.append("persistente")
+    return flags
+
+
+def attacker_from_profile(
+    profile: dict, blocked_ips: set[str] | None = None, whitelisted_ips: set[str] | None = None,
+) -> dict:
+    """Da forma de "atacante" (misma forma que list_attackers()) a una fila
+    de AttackerProfileDB ya convertida a dict -- ver siem/store.py::
+    list_attacker_profiles. No relee eventos crudos: todo lo que necesita ya
+    vive reducido en el perfil (severity_counts, attack_categories,
+    active_days, threat_score)."""
+    blocked_ips = blocked_ips or set()
+    whitelisted_ips = whitelisted_ips or set()
+    ip = profile["ip"]
+
+    if ip in whitelisted_ips:
+        status = "lista_blanca"
+    elif ip in blocked_ips:
+        status = "bloqueada"
+    else:
+        status = "activa"
+
+    max_sev = Severity(profile.get("max_severity") or Severity.INFO.value)
+
+    return {
+        "ip": ip,
+        "country": profile.get("country"),
+        "asn": profile.get("asn"),
+        "asn_org": profile.get("asn_org"),
+        "event_count": profile.get("event_count", 0),
+        "attack_categories": profile.get("attack_categories") or [],
+        "max_severity": max_sev.value,
+        "threat_score": profile.get("threat_score", 0),
+        "suggested_action": suggest_response(max_sev),
+        "status": status,
+        "first_seen": profile.get("first_seen"),
+        "last_seen": profile.get("last_seen"),
+        "last_host": profile.get("last_host"),
+        "last_uri": profile.get("last_uri"),
+        "last_user_agent": profile.get("last_user_agent"),
+        "referer_host": profile.get("referer_host"),
+        "active_days": len(profile.get("active_days") or []),
+        "pattern_flags": pattern_flags(profile),
+    }
 
 
 def list_campaigns(attackers: list[dict]) -> list[dict]:

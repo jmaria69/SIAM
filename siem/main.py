@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from siem.metrics import metrics
+from siem.attacker_aggregator import run_scheduler_loop as run_attacker_aggregator_loop
 from siem.campaign_scheduler import run_scheduler_loop
 from siem.config import Settings, settings as default_settings
 from siem.database import Base, engine, run_light_migrations
@@ -72,9 +73,18 @@ async def lifespan(app: FastAPI):
         run_cloudflare_pull_loop(default_settings.CLOUDFLARE_PULL_INTERVAL_SECONDS)
     )
 
+    # Agregador incremental de perfiles de atacante (siem/attacker_aggregator.py)
+    # -- mismo patrón que los dos anteriores. overview() también llama a
+    # aggregate_once() de forma síncrona, así que este bucle solo cubre el
+    # hueco de cuando nadie tiene el dashboard abierto.
+    attacker_aggregator_task = asyncio.create_task(
+        run_attacker_aggregator_loop(default_settings.ATTACKER_AGGREGATOR_INTERVAL_SECONDS)
+    )
+
     yield
     scheduler_task.cancel()
     cloudflare_pull_task.cancel()
+    attacker_aggregator_task.cancel()
 
 
 def create_app(settings_: Settings | None = None) -> FastAPI:

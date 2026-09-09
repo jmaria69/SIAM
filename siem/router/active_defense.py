@@ -14,8 +14,8 @@ from pydantic import BaseModel
 from siem.active_defense import (
     RESPONSE_ACTIONS,
     WAF_SOURCES,
+    attacker_from_profile,
     compute_threat_score,
-    list_attackers,
     list_campaigns,
 )
 from siem.cloudflare_firewall import (
@@ -24,19 +24,24 @@ from siem.cloudflare_firewall import (
     create_access_rule,
     delete_access_rule,
     is_configured,
+    is_rate_limit_configured,
     sync_honeypot_rule,
+    sync_rate_limit_rule,
 )
 from siem.config import Settings, get_settings
 from siem.models import IOC, WhitelistEntry
 from siem.router.honeypot import HONEYPOT_PATH
 from siem.store import SiemStore, get_store
 
-# Acciones que no usan IP Access Rules (una por IP) sino una única regla
-# compartida por zona vía Rulesets API -- ver siem/cloudflare_firewall.py.
-# RATE_LIMIT se queda fuera a propósito: el plan actual no permite filtrar
-# una regla de rate limiting por IP (ver docstring de cloudflare_firewall.py),
-# así que sigue cayendo al camino simulado más abajo.
-SHARED_RULE_ACTIONS = ("HONEYPOT",)
+# Acciones que no usan IP Access Rules (una por IP) sino un único recurso
+# compartido con el conjunto completo de IPs vigentes -- ver
+# siem/cloudflare_firewall.py. HONEYPOT usa una regla de Rulesets por zona;
+# RATE_LIMIT usa un Workers KV namespace por cuenta (el plan actual no deja
+# filtrar una regla de rate limiting nativa por IP, ver docstring de
+# cloudflare_firewall.py). Cada acción tiene su propia comprobación de "está
+# configurado" -- ver _shared_rule_configured -- porque RATE_LIMIT necesita
+# credenciales adicionales (account id + KV namespace) que HONEYPOT no.
+SHARED_RULE_ACTIONS = ("HONEYPOT", "RATE_LIMIT")
 
 router = APIRouter(prefix="/v1/active-defense", tags=["active-defense"])
 
@@ -81,27 +86,53 @@ def _shared_rule_ips(
     return ips
 
 
+def _shared_rule_configured(action: str, settings: Settings) -> bool:
+    """Cada acción de SHARED_RULE_ACTIONS puede requerir credenciales
+    distintas -- ver comentario de SHARED_RULE_ACTIONS."""
+    if action == "HONEYPOT":
+        return is_configured(settings)
+    if action == "RATE_LIMIT":
+        return is_rate_limit_configured(settings)
+    return False
+
+
 def _sync_shared_rule(action: str, settings: Settings, ips: set[str]) -> None:
     if action == "HONEYPOT":
         sync_honeypot_rule(settings, ips, target_url=f"{settings.CAMPAIGN_BASE_URL}{HONEYPOT_PATH}")
+    elif action == "RATE_LIMIT":
+        sync_rate_limit_rule(settings, ips)
 
 
 @router.get("/overview", dependencies=[Depends(_require_enabled)])
 def overview(
     event_limit: int = Query(10, ge=10, le=100),
+    attacker_limit: int = Query(10, ge=10, le=100),
     store: SiemStore = Depends(get_store),
 ) -> dict:
     if event_limit not in (10, 50, 100):
         raise HTTPException(status_code=422, detail="event_limit debe ser 10, 50 o 100")
+    if attacker_limit not in (10, 30, 100):
+        raise HTTPException(status_code=422, detail="attacker_limit debe ser 10, 30 o 100")
     waf_events = [e for e in store.list_events() if e.source in WAF_SOURCES]
-    attackers = list_attackers(waf_events, blocked_ips=_blocked_ips(store), whitelisted_ips=_whitelisted_ips(store))
+    # Agrupar atacantes ya NO relee eventos crudos en cada petición (no
+    # escalaba a miles de IPs distintas, y el dashboard hace polling cada
+    # 5s) -- aggregate_attacker_profiles() es incremental (solo procesa
+    # eventos WAF nuevos desde el último cursor) y se llama aquí de forma
+    # síncrona para que un atacante recién ingerido siga apareciendo al
+    # instante. Ver siem/attacker_aggregator.py.
+    store.aggregate_attacker_profiles()
+    profiles = store.list_attacker_profiles(limit=attacker_limit)
+    attackers = [
+        attacker_from_profile(p, blocked_ips=_blocked_ips(store), whitelisted_ips=_whitelisted_ips(store))
+        for p in profiles
+    ]
     campaigns = list_campaigns(attackers)
     timeline = sorted(waf_events, key=lambda e: e.timestamp)[-30:]
 
     return {
         "threat_score": compute_threat_score(waf_events),
         "live_attacks": [e.model_dump() for e in waf_events[-event_limit:]][::-1],
-        "attackers": attackers[:50],
+        "attackers": attackers,
         "campaigns": campaigns,
         "timeline": [e.model_dump() for e in timeline],
     }
@@ -127,12 +158,11 @@ def respond(
         }
 
     # Conector real (ver siem/cloudflare_firewall.py): BLOCK/CHALLENGE crean
-    # una IP Access Rule propia; HONEYPOT actualiza la única regla compartida
-    # de su fase con el conjunto completo de IPs marcadas con esa acción
-    # (incluida esta). RATE_LIMIT se queda simulado siempre -- el plan actual
-    # no permite filtrar rate limiting por IP. Si el token no está
-    # configurado, todo se queda simulado -- una integración opcional nunca
-    # debe tumbar el endpoint.
+    # una IP Access Rule propia; HONEYPOT y RATE_LIMIT actualizan su propio
+    # recurso compartido (regla de Rulesets / Workers KV) con el conjunto
+    # completo de IPs marcadas con esa acción (incluida esta). Si las
+    # credenciales necesarias para la acción no están configuradas, se queda
+    # simulado -- una integración opcional nunca debe tumbar el endpoint.
     cf_mode = ACTION_TO_CF_MODE.get(action)
     cf_rule_id = None
     real = False
@@ -148,7 +178,7 @@ def respond(
             resultado = f"Acción '{action}' ejecutada de verdad en Cloudflare (IP Access Rule {cf_rule_id})."
         except CloudflareFirewallError as exc:
             raise HTTPException(status_code=502, detail=f"No se pudo ejecutar '{action}' en Cloudflare: {exc}")
-    elif action in SHARED_RULE_ACTIONS and is_configured(settings):
+    elif action in SHARED_RULE_ACTIONS and _shared_rule_configured(action, settings):
         try:
             ips = _shared_rule_ips(action, store, add_ip=ip)
             _sync_shared_rule(action, settings, ips)
@@ -214,14 +244,14 @@ def remove_from_blacklist(
     # Si el bloqueo era real, hay que deshacerlo también en Cloudflare -- si
     # no, "desbloquear" en el SOC dejaría la acción de verdad activa en el
     # firewall, contradiciendo lo que muestra el dashboard. BLOCK/CHALLENGE
-    # borran su IP Access Rule propia; HONEYPOT recalcula la regla compartida
-    # sin esta IP (nunca tiene cf_rule_id, ver /respond).
+    # borran su IP Access Rule propia; HONEYPOT/RATE_LIMIT recalculan su
+    # recurso compartido sin esta IP (nunca tienen cf_rule_id, ver /respond).
     if ioc.cf_rule_id and is_configured(settings):
         try:
             delete_access_rule(settings, ioc.cf_rule_id)
         except CloudflareFirewallError as exc:
             raise HTTPException(status_code=502, detail=f"No se pudo desbloquear en Cloudflare: {exc}")
-    elif ioc.action in SHARED_RULE_ACTIONS and is_configured(settings):
+    elif ioc.action in SHARED_RULE_ACTIONS and _shared_rule_configured(ioc.action, settings):
         try:
             ips = _shared_rule_ips(ioc.action, store, remove_ip=ioc.value)
             _sync_shared_rule(ioc.action, settings, ips)

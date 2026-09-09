@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     # revisa si hay campañas con starts_at vencido para enviarlas solas.
     CAMPAIGN_SCHEDULER_INTERVAL_SECONDS: int = 30
 
+    # Cada cuántos segundos el bucle de fondo de siem/attacker_aggregator.py
+    # reduce eventos WAF nuevos a attacker_profiles. Bajo a propósito (igual
+    # que el de campañas): overview() ya llama a aggregate_once() de forma
+    # síncrona en cada petición, así que este bucle solo cubre el hueco de
+    # cuando nadie tiene el dashboard abierto.
+    ATTACKER_AGGREGATOR_INTERVAL_SECONDS: int = 30
+
     # WAAP híbrido -- capa cloud (Cloudflare).
     # Si CLOUDFLARE_API_TOKEN o CLOUDFLARE_ZONE_ID están vacíos, el pull no
     # arranca y no se traga excepciones en silencio -- el resto de SIAM
@@ -104,6 +111,18 @@ class Settings(BaseSettings):
     # de pull para no perder eventos si un tick se retrasa. 10 min con pull
     # de 5 min da margen holgado y cursor-free (deduplicación por rayId).
     CLOUDFLARE_LOOKBACK_MINUTES: int = 10
+
+    # RATE_LIMIT del Response Engine (siem/active_defense.py) -- ver
+    # siem/cloudflare_firewall.py::sync_rate_limit_rule. La regla de rate
+    # limiting nativa de Cloudflare (Rulesets, fase http_ratelimit) no deja
+    # filtrar por IP salvo en plan Business+, así que en vez de eso se
+    # sincroniza la lista de IPs marcadas RATE_LIMIT contra un Workers KV
+    # namespace que lee un Worker propio (workers/rate-limiter/, producto
+    # distinto sin esa restricción de plan). Ambas vacías = RATE_LIMIT se
+    # queda simulado, igual que si faltara CLOUDFLARE_API_TOKEN -- una
+    # integración opcional nunca debe tumbar el endpoint.
+    CLOUDFLARE_ACCOUNT_ID: Optional[str] = None
+    CLOUDFLARE_RATE_LIMIT_KV_NAMESPACE_ID: Optional[str] = None
 
     # Módulo premium opcional (Collector/Analyzer los reutiliza del WAAP de
     # arriba -- ver siem/active_defense.py). Solo añade agrupación por

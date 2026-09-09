@@ -182,10 +182,25 @@ def test_whitelisted_attacker_shows_lista_blanca_status(client):
 
 
 def _enable_module_with_cloudflare():
+    # CLOUDFLARE_ACCOUNT_ID/KV_NAMESPACE_ID forzados a None: si no, Settings
+    # (env_file=".env") los rellenaría con los valores reales del .env local
+    # y el test de "se queda simulado sin KV" dejaría de probar lo que dice.
     app.dependency_overrides[get_settings] = lambda: Settings(
         AI_PROVIDER="none", SMTP_HOST=None, ALERT_EMAIL_TO=None,
         PRAXIA_ACTIVE_DEFENSE_ENABLED=True,
         CLOUDFLARE_API_TOKEN="fake-token", CLOUDFLARE_ZONE_ID="fake-zone",
+        CLOUDFLARE_ACCOUNT_ID=None, CLOUDFLARE_RATE_LIMIT_KV_NAMESPACE_ID=None,
+    )
+
+
+def _enable_module_with_rate_limit():
+    # Además del token/zone de siempre, RATE_LIMIT necesita account id +
+    # KV namespace (ver siem/cloudflare_firewall.py::is_rate_limit_configured).
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        AI_PROVIDER="none", SMTP_HOST=None, ALERT_EMAIL_TO=None,
+        PRAXIA_ACTIVE_DEFENSE_ENABLED=True,
+        CLOUDFLARE_API_TOKEN="fake-token", CLOUDFLARE_ZONE_ID="fake-zone",
+        CLOUDFLARE_ACCOUNT_ID="fake-account", CLOUDFLARE_RATE_LIMIT_KV_NAMESPACE_ID="fake-kv-ns",
     )
 
 
@@ -211,14 +226,17 @@ def test_respond_block_uses_real_cloudflare_connector_when_configured(client, mo
         _disable_module()
 
 
-def test_respond_rate_limit_stays_simulated_even_when_configured(client, monkeypatch):
-    """RATE_LIMIT se queda simulado a propósito, incluso con Cloudflare
-    configurado: el plan actual no permite filtrar una regla de rate
-    limiting por IP (ver docstring de siem/cloudflare_firewall.py)."""
+def test_respond_rate_limit_stays_simulated_without_kv_config(client, monkeypatch):
+    """RATE_LIMIT se queda simulado si solo hay token/zone (BLOCK/CHALLENGE/
+    HONEYPOT ya funcionando de verdad) pero falta el account id o el KV
+    namespace propios de RATE_LIMIT -- ver
+    siem/cloudflare_firewall.py::is_rate_limit_configured. Un cliente que
+    aún no ha desplegado el Worker de rate limiting no debe ver este
+    endpoint fallar."""
     import siem.router.active_defense as ad_router
 
-    monkeypatch.setattr(ad_router, "create_access_rule", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no debería llamarse")))
-    _enable_module_with_cloudflare()
+    monkeypatch.setattr(ad_router, "sync_rate_limit_rule", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no debería llamarse")))
+    _enable_module_with_cloudflare()  # sin CLOUDFLARE_ACCOUNT_ID / KV_NAMESPACE_ID
     try:
         resp = client.post("/v1/active-defense/respond?ip=7.7.7.8&action=RATE_LIMIT&confirm=true")
         body = resp.json()
@@ -230,6 +248,49 @@ def test_respond_rate_limit_stays_simulated_even_when_configured(client, monkeyp
         entry = next(b for b in blacklist if b["value"] == "7.7.7.8")
         assert entry["action"] == "RATE_LIMIT"
         assert entry["cf_rule_id"] is None
+    finally:
+        _disable_module()
+
+
+def test_respond_rate_limit_uses_real_workers_kv_when_fully_configured(client, monkeypatch):
+    """Con account id + KV namespace configurados (ver
+    _enable_module_with_rate_limit), RATE_LIMIT sincroniza de verdad el
+    Workers KV que lee workers/rate-limiter/ -- mismo patrón que HONEYPOT."""
+    import siem.router.active_defense as ad_router
+
+    calls = []
+    monkeypatch.setattr(ad_router, "sync_rate_limit_rule", lambda settings, ips: calls.append(set(ips)))
+    _enable_module_with_rate_limit()
+    try:
+        resp = client.post("/v1/active-defense/respond?ip=7.7.7.12&action=RATE_LIMIT&confirm=true")
+        body = resp.json()
+        assert body["ejecutado"] is True
+        assert body["real"] is True
+        assert len(calls) == 1
+        assert calls[0] == {"7.7.7.12"}
+
+        blacklist = client.get("/v1/active-defense/blacklist").json()
+        entry = next(b for b in blacklist if b["value"] == "7.7.7.12")
+        assert entry["action"] == "RATE_LIMIT"
+        assert entry["cf_rule_id"] is None  # RATE_LIMIT nunca crea una regla propia
+    finally:
+        _disable_module()
+
+
+def test_unblocking_a_rate_limited_ip_resyncs_kv_without_it(client, monkeypatch):
+    import siem.router.active_defense as ad_router
+
+    calls = []
+    monkeypatch.setattr(ad_router, "sync_rate_limit_rule", lambda settings, ips: calls.append(set(ips)))
+    _enable_module_with_rate_limit()
+    try:
+        client.post("/v1/active-defense/respond?ip=7.7.7.13&action=RATE_LIMIT&confirm=true")
+        blacklist = client.get("/v1/active-defense/blacklist").json()
+        ioc_id = next(b["id"] for b in blacklist if b["value"] == "7.7.7.13")
+
+        removed = client.delete(f"/v1/active-defense/blacklist/{ioc_id}")
+        assert removed.json()["eliminado"] is True
+        assert calls[-1] == set()  # última sincronización ya no incluye la IP
     finally:
         _disable_module()
 
