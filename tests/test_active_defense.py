@@ -3,6 +3,8 @@ siem/router/active_defense.py). Ver docstring de active_defense.py: reutiliza
 el WAAP existente, solo añade agrupación por atacante/campaña + Response
 Engine simulado detrás de settings.PRAXIA_ACTIVE_DEFENSE_ENABLED.
 """
+from datetime import datetime, timedelta
+
 from siem.active_defense import (
     compute_threat_score,
     list_attackers,
@@ -209,8 +211,9 @@ def test_respond_block_uses_real_cloudflare_connector_when_configured(client, mo
     Rules) cuando hay CLOUDFLARE_API_TOKEN de escritura -- ver
     siem/cloudflare_firewall.py. Se mockea la llamada HTTP real."""
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
-    monkeypatch.setattr(ad_router, "create_access_rule", lambda settings, ip, mode, notes: "cf-rule-123")
+    monkeypatch.setattr(ad_response, "create_access_rule", lambda settings, ip, mode, notes: "cf-rule-123")
     _enable_module_with_cloudflare()
     try:
         resp = client.post("/v1/active-defense/respond?ip=7.7.7.7&action=BLOCK&confirm=true")
@@ -234,8 +237,9 @@ def test_respond_rate_limit_stays_simulated_without_kv_config(client, monkeypatc
     aún no ha desplegado el Worker de rate limiting no debe ver este
     endpoint fallar."""
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
-    monkeypatch.setattr(ad_router, "sync_rate_limit_rule", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no debería llamarse")))
+    monkeypatch.setattr(ad_response, "sync_rate_limit_rule", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no debería llamarse")))
     _enable_module_with_cloudflare()  # sin CLOUDFLARE_ACCOUNT_ID / KV_NAMESPACE_ID
     try:
         resp = client.post("/v1/active-defense/respond?ip=7.7.7.8&action=RATE_LIMIT&confirm=true")
@@ -257,9 +261,10 @@ def test_respond_rate_limit_uses_real_workers_kv_when_fully_configured(client, m
     _enable_module_with_rate_limit), RATE_LIMIT sincroniza de verdad el
     Workers KV que lee workers/rate-limiter/ -- mismo patrón que HONEYPOT."""
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
     calls = []
-    monkeypatch.setattr(ad_router, "sync_rate_limit_rule", lambda settings, ips: calls.append(set(ips)))
+    monkeypatch.setattr(ad_response, "sync_rate_limit_rule", lambda settings, ips: calls.append(set(ips)))
     _enable_module_with_rate_limit()
     try:
         resp = client.post("/v1/active-defense/respond?ip=7.7.7.12&action=RATE_LIMIT&confirm=true")
@@ -279,9 +284,10 @@ def test_respond_rate_limit_uses_real_workers_kv_when_fully_configured(client, m
 
 def test_unblocking_a_rate_limited_ip_resyncs_kv_without_it(client, monkeypatch):
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
     calls = []
-    monkeypatch.setattr(ad_router, "sync_rate_limit_rule", lambda settings, ips: calls.append(set(ips)))
+    monkeypatch.setattr(ad_response, "sync_rate_limit_rule", lambda settings, ips: calls.append(set(ips)))
     _enable_module_with_rate_limit()
     try:
         client.post("/v1/active-defense/respond?ip=7.7.7.13&action=RATE_LIMIT&confirm=true")
@@ -299,9 +305,10 @@ def test_respond_honeypot_uses_real_shared_redirect_rule_when_configured(client,
     """HONEYPOT redirige a /admin (siem/router/honeypot.py) vía la regla
     compartida de la fase http_request_dynamic_redirect."""
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
     calls = []
-    monkeypatch.setattr(ad_router, "sync_honeypot_rule", lambda settings, ips, target_url: calls.append((set(ips), target_url)))
+    monkeypatch.setattr(ad_response, "sync_honeypot_rule", lambda settings, ips, target_url: calls.append((set(ips), target_url)))
     _enable_module_with_cloudflare()
     try:
         resp = client.post("/v1/active-defense/respond?ip=7.7.7.9&action=HONEYPOT&confirm=true")
@@ -318,9 +325,10 @@ def test_respond_honeypot_uses_real_shared_redirect_rule_when_configured(client,
 
 def test_unblocking_a_shared_rule_ip_resyncs_without_it(client, monkeypatch):
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
     calls = []
-    monkeypatch.setattr(ad_router, "sync_honeypot_rule", lambda settings, ips, target_url: calls.append(set(ips)))
+    monkeypatch.setattr(ad_response, "sync_honeypot_rule", lambda settings, ips, target_url: calls.append(set(ips)))
     _enable_module_with_cloudflare()
     try:
         client.post("/v1/active-defense/respond?ip=7.7.7.11&action=HONEYPOT&confirm=true")
@@ -336,12 +344,13 @@ def test_unblocking_a_shared_rule_ip_resyncs_without_it(client, monkeypatch):
 
 def test_respond_block_failure_in_cloudflare_returns_502(client, monkeypatch):
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
     from siem.cloudflare_firewall import CloudflareFirewallError
 
     def _boom(settings, ip, mode, notes):
         raise CloudflareFirewallError("boom")
 
-    monkeypatch.setattr(ad_router, "create_access_rule", _boom)
+    monkeypatch.setattr(ad_response, "create_access_rule", _boom)
     _enable_module_with_cloudflare()
     try:
         resp = client.post("/v1/active-defense/respond?ip=7.7.7.9&action=BLOCK&confirm=true")
@@ -352,10 +361,11 @@ def test_respond_block_failure_in_cloudflare_returns_502(client, monkeypatch):
 
 def test_unblocking_a_real_block_deletes_the_cloudflare_rule(client, monkeypatch):
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
-    monkeypatch.setattr(ad_router, "create_access_rule", lambda settings, ip, mode, notes: "cf-rule-456")
+    monkeypatch.setattr(ad_response, "create_access_rule", lambda settings, ip, mode, notes: "cf-rule-456")
     deleted_ids = []
-    monkeypatch.setattr(ad_router, "delete_access_rule", lambda settings, rule_id: deleted_ids.append(rule_id))
+    monkeypatch.setattr(ad_response, "delete_access_rule", lambda settings, rule_id: deleted_ids.append(rule_id))
     _enable_module_with_cloudflare()
     try:
         client.post("/v1/active-defense/respond?ip=7.7.7.10&action=BLOCK&confirm=true")
@@ -375,10 +385,11 @@ def test_respond_twice_on_same_ip_replaces_ioc_instead_of_duplicating(client, mo
     select + "Confirmar" en la fila ya bloqueada. No debe quedar más de un
     IOC por IP en /blacklist."""
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
     honeypot_calls = []
-    monkeypatch.setattr(ad_router, "sync_honeypot_rule", lambda settings, ips, target_url: honeypot_calls.append(set(ips)))
-    monkeypatch.setattr(ad_router, "create_access_rule", lambda settings, ip, mode, notes: "cf-rule-789")
+    monkeypatch.setattr(ad_response, "sync_honeypot_rule", lambda settings, ips, target_url: honeypot_calls.append(set(ips)))
+    monkeypatch.setattr(ad_response, "create_access_rule", lambda settings, ip, mode, notes: "cf-rule-789")
     _enable_module_with_cloudflare()
     try:
         client.post("/v1/active-defense/respond?ip=7.7.7.20&action=HONEYPOT&confirm=true")
@@ -402,9 +413,10 @@ def test_respond_twice_with_same_action_does_not_revert_or_duplicate(client, mon
     no-op sobre Cloudflare: no hay que deshacer nada porque no cambió, y
     /blacklist sigue con una sola entrada."""
     import siem.router.active_defense as ad_router
+    import siem.response_actions as ad_response
 
     honeypot_calls = []
-    monkeypatch.setattr(ad_router, "sync_honeypot_rule", lambda settings, ips, target_url: honeypot_calls.append(set(ips)))
+    monkeypatch.setattr(ad_response, "sync_honeypot_rule", lambda settings, ips, target_url: honeypot_calls.append(set(ips)))
     _enable_module_with_cloudflare()
     try:
         client.post("/v1/active-defense/respond?ip=7.7.7.21&action=HONEYPOT&confirm=true")
@@ -432,5 +444,99 @@ def test_blacklist_crud(client):
 
         removed = client.delete(f"/v1/active-defense/blacklist/{ioc_id}")
         assert removed.json()["eliminado"] is True
+    finally:
+        _disable_module()
+
+
+def test_metrics_aggregates_waf_and_honeypot_events(client):
+    """El dashboard de métricas cuenta WAF + honeypot (a diferencia de
+    "attackers", que solo agrupa WAF_SOURCES -- ver ATTACK_SOURCES)."""
+    _enable_module()
+    try:
+        client.post("/v1/ingest/waf", json={"events": [
+            {"source": "waf-cloudflare", "action": "block", "attack_category": "sqli",
+             "client_ip": "8.8.8.1", "country": "ES"},
+            {"source": "waf-cloudflare", "action": "block", "attack_category": "sqli",
+             "client_ip": "8.8.8.1", "country": "ES"},
+            {"source": "waf-cloudflare", "action": "block", "attack_category": "xss",
+             "client_ip": "8.8.8.2", "country": "FR"},
+        ]})
+        client.get("/admin")  # visita al honeypot -- source="honeypot"
+
+        body = client.get("/v1/active-defense/metrics").json()
+        assert body["total_events"] == 4
+        assert body["unique_attackers"] == 3  # 8.8.8.1, 8.8.8.2 + IP del visitante del honeypot
+        assert body["honeypot_interactions"] == 1
+        assert {"label": "sqli", "count": 2} in body["by_category"]
+        assert {"label": "xss", "count": 1} in body["by_category"]
+        assert sum(body["by_severity"].values()) == 4
+        assert sum(b["count"] for b in body["timeseries"]) == 4
+        assert body["by_action"] == {"BLOCK": 0, "RATE_LIMIT": 0, "CHALLENGE": 0, "HONEYPOT": 0}
+
+        client.post("/v1/active-defense/respond?ip=8.8.8.1&action=BLOCK&confirm=true")
+        body = client.get("/v1/active-defense/metrics").json()
+        assert body["blocked_ips"] == 1
+        assert body["by_action"]["BLOCK"] == 1
+    finally:
+        _disable_module()
+
+
+def test_metrics_date_range_filters_events(client, db_session):
+    from siem.models import Event, Severity
+    from siem.store import SiemStore
+
+    store = SiemStore(db_session)
+    store.add_event(Event(
+        source="waf-cloudflare", summary="viejo", severity=Severity.HIGH,
+        raw_payload={"client_ip": "5.5.5.5", "country": "ES", "attack_category": "sqli"},
+        timestamp=datetime(2026, 1, 1, 12, 0, 0),
+    ))
+    store.add_event(Event(
+        source="waf-cloudflare", summary="reciente", severity=Severity.HIGH,
+        raw_payload={"client_ip": "5.5.5.6", "country": "ES", "attack_category": "sqli"},
+        timestamp=datetime(2026, 6, 1, 12, 0, 0),
+    ))
+
+    _enable_module()
+    try:
+        body = client.get("/v1/active-defense/metrics?date_from=2026-06-01&date_to=2026-06-01").json()
+        assert body["total_events"] == 1
+        assert body["unique_attackers"] == 1
+
+        body_all = client.get("/v1/active-defense/metrics").json()
+        assert body_all["total_events"] == 2
+
+        bad = client.get("/v1/active-defense/metrics?date_from=nope")
+        assert bad.status_code == 422
+
+        inverted = client.get("/v1/active-defense/metrics?date_from=2026-06-01&date_to=2026-01-01")
+        assert inverted.status_code == 422
+    finally:
+        _disable_module()
+
+
+def test_overview_date_range_filters_live_attacks_and_timeline(client):
+    _enable_module()
+    try:
+        client.post("/v1/ingest/waf", json={"events": [
+            {"source": "waf-cloudflare", "action": "block", "attack_category": "sqli",
+             "client_ip": "4.4.4.4", "country": "ES"},
+        ]})
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        body = client.get(f"/v1/active-defense/overview?date_from={today}&date_to={today}").json()
+        assert len(body["live_attacks"]) == 1
+        assert any(e["raw_payload"]["client_ip"] == "4.4.4.4" for e in body["timeline"])
+        # Con rango de fechas, "attackers" también se recalcula sobre los
+        # eventos filtrados (list_attackers), no sobre el rollup sin fecha.
+        assert len(body["attackers"]) == 1
+
+        body_empty = client.get(
+            f"/v1/active-defense/overview?date_from={yesterday}&date_to={yesterday}"
+        ).json()
+        assert body_empty["live_attacks"] == []
+        assert body_empty["timeline"] == []
+        assert body_empty["attackers"] == []
     finally:
         _disable_module()

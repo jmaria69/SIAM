@@ -14,6 +14,7 @@ import datetime as dt
 import random
 
 from siem.models import (
+    IOC,
     Asset,
     AssetCriticality,
     Event,
@@ -183,3 +184,60 @@ def seed_demo_data(store: SiemStore) -> None:
             incident_id=inc3.id, threat_ids=[3], timestamp=now - dt.timedelta(days=2),
         )
     )
+
+    # --- Eventos WAF/honeypot inventados, para el dashboard "📊 Métricas de
+    # ataques" (ATTACK_SOURCES en siem/active_defense.py = WAF + honeypot).
+    # raw_payload replica el formato de siem/router/waf.py::_to_event -- es
+    # lo que lee siem/store.py::attack_metrics() para el desglose por
+    # severidad/categoría/país/serie temporal. Un prospecto que abra la demo
+    # debe ver un dashboard con datos, no en ceros.
+    _WAF_ATTACKERS = [
+        ("203.0.113.9", "RU", "AS64500", "sqli", Severity.CRITICAL),
+        ("198.51.100.23", "CN", "AS64501", "xss", Severity.HIGH),
+        ("198.51.100.77", "CN", "AS64501", "rce", Severity.CRITICAL),
+        ("192.0.2.14", "BR", "AS64502", "lfi", Severity.HIGH),
+        ("192.0.2.55", "VN", "AS64503", "generic", Severity.MEDIUM),
+        ("203.0.113.201", "NG", "AS64504", "sqli", Severity.MEDIUM),
+        ("203.0.113.240", "RU", "AS64500", "scan", Severity.LOW),
+    ]
+    for ip, country, asn, category, base_sev in _WAF_ATTACKERS:
+        n_events = rng.randint(3, 14)
+        for _ in range(n_events):
+            ts = now - dt.timedelta(hours=rng.randint(0, 13 * 24))
+            sev = rng.choice([base_sev, base_sev, Severity.MEDIUM])
+            store.add_event(
+                Event(
+                    source="waf-cloudflare",
+                    event_type=f"waf.block.{category}",
+                    severity=sev,
+                    summary=f"WAF BLOCK {category} desde {ip} ({country})",
+                    timestamp=ts,
+                    raw_payload={
+                        "client_ip": ip, "country": country, "asn": asn,
+                        "attack_category": category, "action": "block",
+                        "host": "web-prod-01", "uri": "/wp-login.php" if category == "generic" else "/api/login",
+                        "user_agent": "python-requests/2.31" if category == "scan" else "Mozilla/5.0",
+                    },
+                )
+            )
+
+    # Un par de IPs que además tocan el honeypot (ver siem/router/honeypot.py)
+    # -- interacción posterior a caer en el señuelo, cuenta aparte en
+    # attack_metrics() como "honeypot_interactions".
+    for ip, country in [("198.51.100.77", "CN"), ("203.0.113.9", "RU")]:
+        for _ in range(rng.randint(2, 6)):
+            ts = now - dt.timedelta(hours=rng.randint(0, 10 * 24))
+            store.add_event(
+                Event(
+                    source="honeypot",
+                    event_type="honeypot.interaction",
+                    severity=Severity.LOW,
+                    summary=f"Interacción con honeypot desde {ip} ({country})",
+                    timestamp=ts,
+                    raw_payload={"client_ip": ip, "country": country, "attack_category": "recon"},
+                )
+            )
+
+    # IP ya bloqueada de ejemplo -- para que "IPs bloqueadas" del dashboard
+    # de métricas no salga siempre a cero.
+    store.add_ioc(IOC(type="ip", value="203.0.113.9", confidence="alta", action="BLOCK"))

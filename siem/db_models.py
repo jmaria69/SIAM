@@ -153,6 +153,15 @@ class AttackerProfileDB(Base):
     last_user_agent = Column(String, nullable=True)
     referer_host = Column(String, nullable=True)
     updated_at = Column(DateTime, default=dt.datetime.utcnow)
+    # Enriquecimiento WHOIS/RDAP (siem/ip_intel.py), rellenado una sola vez
+    # por IP cuando se convierte en reincidente confirmado -- ver
+    # siem/attacker_aggregator.py::apply_auto_responses. intel_fetched_at
+    # NULL = todavía no se ha intentado (no "se intentó y no había datos");
+    # así no se reintenta en cada tick del agregador.
+    whois_org = Column(String, nullable=True)
+    whois_network_name = Column(String, nullable=True)
+    whois_abuse_email = Column(String, nullable=True)
+    intel_fetched_at = Column(DateTime, nullable=True)
 
 
 class AggregatorCursorDB(Base):

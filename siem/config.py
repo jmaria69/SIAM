@@ -130,6 +130,21 @@ class Settings(BaseSettings):
     # activa por cliente cuando contrata el add-on.
     PRAXIA_ACTIVE_DEFENSE_ENABLED: bool = False
 
+    # Reincidentes (siem/attacker_aggregator.py::apply_auto_responses): una IP
+    # que ya acumuló active_defense.PATTERN_REPEAT_OFFENDER_EVENTS eventos WAF
+    # y no está bloqueada ni en lista blanca. False por defecto a propósito --
+    # a diferencia del resto de banderas "sin credenciales = simulado", esta
+    # SÍ crea una regla real en Cloudflare (si hay credenciales) sin que un
+    # humano confirme esa IP en concreto, así que el cliente debe encenderla
+    # explícitamente sabiendo eso.
+    PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS: bool = False
+
+    # Enriquecimiento WHOIS/RDAP de reincidentes (siem/ip_intel.py) -- consulta
+    # de solo lectura a rdap.org (sin credenciales, gratis), no toca ningún
+    # firewall ni ejecuta ninguna acción por sí sola, así que sí va activada
+    # por defecto (a diferencia del auto-honeypot de arriba).
+    PRAXIA_IP_INTEL_ENABLED: bool = True
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]

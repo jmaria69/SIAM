@@ -6,6 +6,7 @@ accesible (para que el frontend decida si pinta la pestaña sin necesitar ya
 la clave del módulo), el resto de rutas devuelve 403 si el cliente no lo
 tiene contratado -- gating real, no solo ocultar la pestaña en el frontend.
 """
+from datetime import datetime, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,32 +17,15 @@ from siem.active_defense import (
     WAF_SOURCES,
     attacker_from_profile,
     compute_threat_score,
+    list_attackers,
     list_campaigns,
 )
-from siem.cloudflare_firewall import (
-    ACTION_TO_CF_MODE,
-    CloudflareFirewallError,
-    create_access_rule,
-    delete_access_rule,
-    is_configured,
-    is_rate_limit_configured,
-    sync_honeypot_rule,
-    sync_rate_limit_rule,
-)
+from siem.attacker_aggregator import apply_auto_responses
+from siem.cloudflare_firewall import CloudflareFirewallError, create_access_rule, is_configured
 from siem.config import Settings, get_settings
 from siem.models import IOC, WhitelistEntry
-from siem.router.honeypot import HONEYPOT_PATH
+from siem.response_actions import apply_response_action, revert_ioc
 from siem.store import SiemStore, get_store
-
-# Acciones que no usan IP Access Rules (una por IP) sino un único recurso
-# compartido con el conjunto completo de IPs vigentes -- ver
-# siem/cloudflare_firewall.py. HONEYPOT usa una regla de Rulesets por zona;
-# RATE_LIMIT usa un Workers KV namespace por cuenta (el plan actual no deja
-# filtrar una regla de rate limiting nativa por IP, ver docstring de
-# cloudflare_firewall.py). Cada acción tiene su propia comprobación de "está
-# configurado" -- ver _shared_rule_configured -- porque RATE_LIMIT necesita
-# credenciales adicionales (account id + KV namespace) que HONEYPOT no.
-SHARED_RULE_ACTIONS = ("HONEYPOT", "RATE_LIMIT")
 
 router = APIRouter(prefix="/v1/active-defense", tags=["active-defense"])
 
@@ -71,93 +55,101 @@ def _whitelisted_ips(store: SiemStore) -> set[str]:
     return {w.ip for w in store.list_whitelist()}
 
 
-def _shared_rule_ips(
-    action: str, store: SiemStore, *, add_ip: Optional[str] = None, remove_ip: Optional[str] = None,
-) -> set[str]:
-    """Todas las IPs con IOC(action=action) vigentes, ajustadas con la que se
-    está añadiendo/quitando en esta misma petición (el IOC aún no está
-    guardado/borrado en `store` cuando se llama esto -- ver /respond y
-    /blacklist/{ioc_id})."""
-    ips = {ioc.value for ioc in store.list_iocs() if ioc.type == "ip" and ioc.action == action}
-    if add_ip:
-        ips.add(add_ip)
-    if remove_ip:
-        ips.discard(remove_ip)
-    return ips
-
-
-def _revert_ioc(ioc: IOC, store: SiemStore, settings: Settings) -> None:
-    """Deshace en Cloudflare lo que dejó activo un IOC (usado tanto al
-    desbloquear como al reemplazarlo por una acción distinta en /respond) --
-    si no, el SOC vería el dashboard "limpio" mientras la acción de verdad
-    sigue activa en el firewall. BLOCK/CHALLENGE borran su IP Access Rule
-    propia; HONEYPOT/RATE_LIMIT recalculan su recurso compartido sin esta IP
-    (nunca tienen cf_rule_id, ver /respond)."""
-    if ioc.cf_rule_id and is_configured(settings):
+def _parse_date_range(date_from: Optional[str], date_to: Optional[str]) -> tuple[Optional[datetime], Optional[datetime]]:
+    """"YYYY-MM-DD" (lo que manda <input type="date">) a límites de día
+    completos en UTC -- date_to es inclusive (23:59:59.999999), si no un
+    filtro "hasta hoy" excluiría los eventos de hoy mismo."""
+    def _parse(value: Optional[str], *, end_of_day: bool) -> Optional[datetime]:
+        if not value:
+            return None
         try:
-            delete_access_rule(settings, ioc.cf_rule_id)
-        except CloudflareFirewallError as exc:
-            raise HTTPException(status_code=502, detail=f"No se pudo desbloquear en Cloudflare: {exc}")
-    elif ioc.action in SHARED_RULE_ACTIONS and _shared_rule_configured(ioc.action, settings):
-        try:
-            ips = _shared_rule_ips(ioc.action, store, remove_ip=ioc.value)
-            _sync_shared_rule(ioc.action, settings, ips)
-        except CloudflareFirewallError as exc:
-            raise HTTPException(
-                status_code=502, detail=f"No se pudo actualizar la regla compartida de {ioc.action} en Cloudflare: {exc}",
-            )
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Fecha inválida: {value!r} (formato esperado YYYY-MM-DD)")
+        return parsed + timedelta(days=1, microseconds=-1) if end_of_day else parsed
 
-
-def _shared_rule_configured(action: str, settings: Settings) -> bool:
-    """Cada acción de SHARED_RULE_ACTIONS puede requerir credenciales
-    distintas -- ver comentario de SHARED_RULE_ACTIONS."""
-    if action == "HONEYPOT":
-        return is_configured(settings)
-    if action == "RATE_LIMIT":
-        return is_rate_limit_configured(settings)
-    return False
-
-
-def _sync_shared_rule(action: str, settings: Settings, ips: set[str]) -> None:
-    if action == "HONEYPOT":
-        sync_honeypot_rule(settings, ips, target_url=f"{settings.CAMPAIGN_BASE_URL}{HONEYPOT_PATH}")
-    elif action == "RATE_LIMIT":
-        sync_rate_limit_rule(settings, ips)
+    parsed_from = _parse(date_from, end_of_day=False)
+    parsed_to = _parse(date_to, end_of_day=True)
+    if parsed_from and parsed_to and parsed_from > parsed_to:
+        raise HTTPException(status_code=422, detail="date_from no puede ser posterior a date_to")
+    return parsed_from, parsed_to
 
 
 @router.get("/overview", dependencies=[Depends(_require_enabled)])
 def overview(
     event_limit: int = Query(10, ge=10, le=100),
     attacker_limit: int = Query(10, ge=10, le=100),
+    timeline_limit: int = Query(10, ge=10, le=100),
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD, filtra live_attacks/timeline/threat_score/attackers"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     store: SiemStore = Depends(get_store),
+    settings: Settings = Depends(get_settings),
 ) -> dict:
     if event_limit not in (10, 50, 100):
         raise HTTPException(status_code=422, detail="event_limit debe ser 10, 50 o 100")
     if attacker_limit not in (10, 30, 100):
         raise HTTPException(status_code=422, detail="attacker_limit debe ser 10, 30 o 100")
-    waf_events = [e for e in store.list_events() if e.source in WAF_SOURCES]
-    # Agrupar atacantes ya NO relee eventos crudos en cada petición (no
-    # escalaba a miles de IPs distintas, y el dashboard hace polling cada
-    # 5s) -- aggregate_attacker_profiles() es incremental (solo procesa
-    # eventos WAF nuevos desde el último cursor) y se llama aquí de forma
-    # síncrona para que un atacante recién ingerido siga apareciendo al
-    # instante. Ver siem/attacker_aggregator.py.
-    store.aggregate_attacker_profiles()
-    profiles = store.list_attacker_profiles(limit=attacker_limit)
-    attackers = [
-        attacker_from_profile(p, blocked_ips=_blocked_ips(store), whitelisted_ips=_whitelisted_ips(store))
-        for p in profiles
-    ]
+    if timeline_limit not in (10, 50, 100):
+        raise HTTPException(status_code=422, detail="timeline_limit debe ser 10, 50 o 100")
+    parsed_from, parsed_to = _parse_date_range(date_from, date_to)
+    # date_from/date_to acotan los eventos crudos (live_attacks/timeline/
+    # threat_score). Sin rango, "attackers" usa el rollup acumulado de
+    # siempre (attacker_profiles, sin dimensión de fecha propia) por
+    # rendimiento -- ver aggregate_attacker_profiles más abajo. Con rango,
+    # se recalcula al vuelo con list_attackers() sobre los eventos ya
+    # filtrados, para que la tabla de atacantes refleje de verdad las
+    # fechas elegidas (igual que store.attack_metrics() para el dashboard
+    # de métricas, pero aquí con la forma que ya espera el frontend).
+    waf_events = store.list_events(limit=2000, sources=WAF_SOURCES, date_from=parsed_from, date_to=parsed_to)
+    if parsed_from is not None or parsed_to is not None:
+        attackers = list_attackers(
+            waf_events, blocked_ips=_blocked_ips(store), whitelisted_ips=_whitelisted_ips(store),
+        )[:attacker_limit]
+    else:
+        # Agrupar atacantes ya NO relee eventos crudos en cada petición (no
+        # escalaba a miles de IPs distintas, y el dashboard hace polling
+        # cada 5s) -- aggregate_attacker_profiles() es incremental (solo
+        # procesa eventos WAF nuevos desde el último cursor) y se llama
+        # aquí de forma síncrona para que un atacante recién ingerido siga
+        # apareciendo al instante. Ver siem/attacker_aggregator.py.
+        store.aggregate_attacker_profiles()
+        # Ver siem/attacker_aggregator.py::apply_auto_responses -- mismo
+        # motivo que aggregate_attacker_profiles() arriba: cubre el hueco
+        # entre ticks del bucle de fondo mientras alguien tiene el
+        # dashboard abierto, en vez de depender solo del scheduler.
+        apply_auto_responses(store, settings)
+        profiles = store.list_attacker_profiles(limit=attacker_limit)
+        attackers = [
+            attacker_from_profile(p, blocked_ips=_blocked_ips(store), whitelisted_ips=_whitelisted_ips(store))
+            for p in profiles
+        ]
     campaigns = list_campaigns(attackers)
-    timeline = sorted(waf_events, key=lambda e: e.timestamp)[-30:]
+    # waf_events viene ordenado desc (más reciente primero, ver list_events).
+    timeline = list(reversed(waf_events))[-timeline_limit:]
 
     return {
         "threat_score": compute_threat_score(waf_events),
-        "live_attacks": [e.model_dump() for e in waf_events[-event_limit:]][::-1],
+        "live_attacks": [e.model_dump() for e in waf_events[:event_limit]],
         "attackers": attackers,
         "campaigns": campaigns,
         "timeline": [e.model_dump() for e in timeline],
     }
+
+
+@router.get("/metrics", dependencies=[Depends(_require_enabled)])
+def metrics(
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    store: SiemStore = Depends(get_store),
+) -> dict:
+    """Dashboard de métricas de ataques: totales, desglose por severidad/
+    categoría/país, interacciones con el honeypot y serie temporal diaria,
+    todo filtrable por rango de fechas. Ver store.attack_metrics()."""
+    parsed_from, parsed_to = _parse_date_range(date_from, date_to)
+    result = store.attack_metrics(date_from=parsed_from, date_to=parsed_to)
+    result["date_from"] = date_from
+    result["date_to"] = date_to
+    return result
 
 
 @router.post("/respond", dependencies=[Depends(_require_enabled)])
@@ -179,65 +171,9 @@ def respond(
             "como_confirmar": f"POST /v1/active-defense/respond?ip={ip}&action={action}&confirm=true",
         }
 
-    # Conector real (ver siem/cloudflare_firewall.py): BLOCK/CHALLENGE crean
-    # una IP Access Rule propia; HONEYPOT y RATE_LIMIT actualizan su propio
-    # recurso compartido (regla de Rulesets / Workers KV) con el conjunto
-    # completo de IPs marcadas con esa acción (incluida esta). Si las
-    # credenciales necesarias para la acción no están configuradas, se queda
-    # simulado -- una integración opcional nunca debe tumbar el endpoint.
-    cf_mode = ACTION_TO_CF_MODE.get(action)
-    cf_rule_id = None
-    real = False
-    resultado = f"Acción '{action}' simulada correctamente sobre {ip} (sin conector real para esta acción)."
-
-    if cf_mode and is_configured(settings):
-        try:
-            cf_rule_id = create_access_rule(
-                settings, ip=ip, mode=cf_mode,
-                notes=f"SIAM Active Defense: {action} confirmado desde el SOC",
-            )
-            real = True
-            resultado = f"Acción '{action}' ejecutada de verdad en Cloudflare (IP Access Rule {cf_rule_id})."
-        except CloudflareFirewallError as exc:
-            raise HTTPException(status_code=502, detail=f"No se pudo ejecutar '{action}' en Cloudflare: {exc}")
-    elif action in SHARED_RULE_ACTIONS and _shared_rule_configured(action, settings):
-        try:
-            ips = _shared_rule_ips(action, store, add_ip=ip)
-            _sync_shared_rule(action, settings, ips)
-            real = True
-            resultado = f"Acción '{action}' ejecutada de verdad en Cloudflare (regla compartida, {len(ips)} IP(s))."
-        except CloudflareFirewallError as exc:
-            raise HTTPException(status_code=502, detail=f"No se pudo ejecutar '{action}' en Cloudflare: {exc}")
-
-    # Queda registrado como IOC de confianza alta en cualquier caso (real o
-    # simulado): así el dashboard de Threat Intel se puebla con atacantes
-    # confirmados y overview() pinta el estado "bloqueada" de verdad. Solo
-    # lleva cf_rule_id cuando la acción fue BLOCK/CHALLENGE real (RATE_LIMIT/
-    # HONEYPOT no crean una regla propia, ver arriba).
-    #
-    # Si la IP ya tenía un IOC (p.ej. el SOC cambia de HONEYPOT a BLOCK sin
-    # desbloquear antes), se sustituye en vez de acumular una entrada por
-    # cada acción confirmada -- si no, /blacklist y el estado "bloqueada" del
-    # dashboard quedarían con IOCs duplicados y solo el más reciente (por
-    # orden no garantizado) se vería reflejado en la fila. Si la acción
-    # anterior dejó algo activo en Cloudflare (regla propia o IP en un
-    # recurso compartido) y la nueva acción es distinta, se deshace primero
-    # -- si no, la IP quedaría en dos sitios a la vez (p.ej. en la regla de
-    # HONEYPOT Y con una IP Access Rule de BLOCK).
-    existing = next((ioc for ioc in store.list_iocs() if ioc.type == "ip" and ioc.value == ip), None)
-    if existing is not None:
-        if existing.action != action:
-            _revert_ioc(existing, store, settings)
-        store.remove_ioc(existing.id)
-    store.add_ioc(IOC(type="ip", value=ip, confidence="alta", cf_rule_id=cf_rule_id, action=action))
-
-    return {
-        "ejecutado": True,
-        "accion": action,
-        "ip": ip,
-        "real": real,
-        "resultado": resultado,
-    }
+    # Ejecución + registro como IOC compartidos con el auto-honeypot de
+    # reincidentes -- ver siem/response_actions.py.
+    return apply_response_action(ip, action, store, settings, confidence="alta")
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +214,7 @@ def remove_from_blacklist(
     if ioc is None:
         raise HTTPException(status_code=404, detail="No encontrado")
 
-    _revert_ioc(ioc, store, settings)
+    revert_ioc(ioc, store, settings)
     store.remove_ioc(ioc_id)
     return {"eliminado": True}
 

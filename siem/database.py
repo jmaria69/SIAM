@@ -76,6 +76,16 @@ def run_light_migrations(bind_engine=None) -> None:
         # limiting/honeypot -- ver siem/cloudflare_firewall.py.
         "ALTER TABLE iocs ADD COLUMN action VARCHAR DEFAULT 'BLOCK'",
         "UPDATE iocs SET action = 'BLOCK' WHERE action IS NULL",
+        # 2026-09-09: enriquecimiento WHOIS/RDAP de reincidentes (ver
+        # siem/ip_intel.py + siem/attacker_aggregator.py::apply_auto_responses).
+        # intel_fetched_at se deja NULL en el backfill -- así el agregador
+        # sigue viendo a los reincidentes ya existentes como "sin intentar
+        # todavía" y los enriquece en el próximo tick, en vez de asumir que
+        # ya se intentó y no había datos.
+        "ALTER TABLE attacker_profiles ADD COLUMN whois_org VARCHAR",
+        "ALTER TABLE attacker_profiles ADD COLUMN whois_network_name VARCHAR",
+        "ALTER TABLE attacker_profiles ADD COLUMN whois_abuse_email VARCHAR",
+        "ALTER TABLE attacker_profiles ADD COLUMN intel_fetched_at DATETIME",
     ]
     with bind_engine.connect() as conn:
         for statement in statements:

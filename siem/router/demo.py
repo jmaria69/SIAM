@@ -37,6 +37,7 @@ from siem.router.incidents import get_incident as _incidents_get
 from siem.router.incidents import list_incidents as _incidents_list
 from siem.router.incidents import reconstruct_kill_chain as _incidents_kill_chain
 from siem.router.incidents import update_incident as _incidents_update
+from siem.router.active_defense import metrics as _active_defense_metrics
 from siem.router.monitoring import get_overview as _monitoring_overview
 from siem.router.monitoring import get_timeseries as _monitoring_timeseries
 from siem.router.monitoring import ingest_event as _monitoring_ingest
@@ -238,6 +239,25 @@ def demo_kill_chain(incident_id: str, store: SiemStore = Depends(get_demo_store)
 @router.get("/demo/v1/reports/executive")
 def demo_executive_panel(store: SiemStore = Depends(get_demo_store)) -> dict:
     return _reports_executive(store)
+
+
+# ---------------------------------------------------------------------------
+# Praxia Active Defense: SOLO se expone /metrics (lectura pura sobre la base
+# de datos de la demo, ver store.attack_metrics()). El resto del módulo
+# (/overview, /respond, /blacklist, /whitelist) se deja fuera a propósito:
+# /respond decide si ejecuta una acción REAL contra Cloudflare mirando
+# `settings.CLOUDFLARE_API_TOKEN` (la configuración global de verdad, no la
+# base de datos separada de la demo) -- un visitante anónimo podría acabar
+# creando una IP Access Rule real en la zona de producción. La pestaña
+# "⚔️ Praxia Active Defense" sigue oculta en /demo/dashboard (su gating usa
+# /status, que aquí no existe a propósito); solo "📊 Métricas de ataques" se
+# activa para el modo demo (ver soc_dashboard.html::IS_DEMO).
+# ---------------------------------------------------------------------------
+@router.get("/demo/v1/active-defense/metrics")
+def demo_active_defense_metrics(
+    date_from: str | None = None, date_to: str | None = None, store: SiemStore = Depends(get_demo_store),
+) -> dict:
+    return _active_defense_metrics(date_from=date_from, date_to=date_to, store=store)
 
 
 # /demo/v1/pyme/* -- el motor de Ciberseguridad PYME es un conjunto de

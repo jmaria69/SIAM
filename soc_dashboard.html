@@ -734,6 +734,14 @@ function SimulatorPanel() {
   const [selected, setSelected] = useState(null);
   const [run, setRun] = useState(null);
   const [launching, setLaunching] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  // El simulador escribe eventos/incidentes reales (motor de correlación de
+  // verdad, ver siem/simulator.py) -- por eso NO está montado en
+  // /demo/dashboard (ver siem/router/demo.py): con la demo, /v1/monitoring/
+  // scenarios se reescribe a /demo/v1/monitoring/scenarios, que no existe
+  // (404), así que se distingue de "sin escenarios" para no dejar el
+  // "Cargando..." colgado para siempre.
+  const [notAvailable, setNotAvailable] = useState(false);
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -744,8 +752,11 @@ function SimulatorPanel() {
           const data = await res.json();
           setScenarios(data);
           if (data.length > 0) setSelected(data[0].id);
+        } else if (res.status === 404) {
+          setNotAvailable(true);
         }
       } catch (err) { console.error(err); }
+      finally { setLoaded(true); }
     }
     load();
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
@@ -786,7 +797,17 @@ function SimulatorPanel() {
           Practica sobre el mismo motor de correlación que un incidente real: los eventos e
           incidentes que genera esto se guardan igual que cualquier otro, con delays reales entre pasos.
         </p>
-        {scenarios.length === 0 ? (
+        {notAvailable ? (
+          <div className="bg-slate-950 border border-slate-800 rounded-lg p-4 text-sm text-slate-400">
+            El simulador de crisis escribe eventos e incidentes reales sobre el motor de
+            correlación, así que no está disponible en esta demo pública para no mezclarse con
+            los datos de ejemplo.{' '}
+            <a href="/demo" className="text-blue-400 hover:underline">
+              Solicita una demo guiada
+            </a>{' '}
+            para verlo en acción con tus propios datos.
+          </div>
+        ) : !loaded || scenarios.length === 0 ? (
           <p className="text-slate-500 italic text-sm">Cargando escenarios...</p>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-4">
@@ -800,10 +821,12 @@ function SimulatorPanel() {
             ))}
           </div>
         )}
-        <button onClick={launch} disabled={!selected || launching || enCurso}
-          className="bg-rose-700 hover:bg-rose-600 disabled:opacity-50 rounded px-4 py-2 text-sm font-semibold">
-          {enCurso ? '⏳ Escenario en curso...' : '▶️ Lanzar escenario'}
-        </button>
+        {!notAvailable && (
+          <button onClick={launch} disabled={!selected || launching || enCurso}
+            className="bg-rose-700 hover:bg-rose-600 disabled:opacity-50 rounded px-4 py-2 text-sm font-semibold">
+            {enCurso ? '⏳ Escenario en curso...' : '▶️ Lanzar escenario'}
+          </button>
+        )}
       </div>
 
       {run && (
@@ -1901,12 +1924,241 @@ const PATTERN_FLAG_TITLE = {
 };
 const PATTERN_FLAG_STYLE = 'bg-amber-950 text-amber-300 border border-amber-800';
 
+const METRICS_SEVERITY_COLOR = {
+  critica: 'rgba(244,63,94,0.85)', alta: 'rgba(249,115,22,0.85)',
+  media: 'rgba(245,158,11,0.85)', baja: 'rgba(59,130,246,0.85)', info: 'rgba(100,116,139,0.85)',
+};
+const METRICS_ACTION_COLOR = {
+  BLOCK: 'rgba(244,63,94,0.85)', RATE_LIMIT: 'rgba(249,115,22,0.85)',
+  CHALLENGE: 'rgba(245,158,11,0.85)', HONEYPOT: 'rgba(139,92,246,0.85)',
+};
+
+// Dashboard de métricas del módulo Active Defense -- agregación en memoria
+// sobre ATTACK_SOURCES (WAF + honeypot), ver siem/store.py::attack_metrics.
+// Mismo guard typeof Chart === 'undefined' que TimeseriesChart/CampaignAnalytics
+// -- el CDN de Chart.js puede devolver 503 (bug real 2026-07-03).
+function AttackMetricsPanel() {
+  const [data, setData] = useState(null);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [error, setError] = useState(null);
+  const timeseriesRef = useRef(null);
+  const timeseriesChartRef = useRef(null);
+  const severityRef = useRef(null);
+  const severityChartRef = useRef(null);
+
+  async function load() {
+    try {
+      setError(null);
+      const dateParams = (dateFrom ? `&date_from=${dateFrom}` : '') + (dateTo ? `&date_to=${dateTo}` : '');
+      const res = await fetch(`/v1/active-defense/metrics?limit=20000${dateParams}`);
+      if (res.ok) setData(await res.json());
+      else { const body = await res.json().catch(() => ({})); setError(body.detail || 'No se pudieron cargar las métricas.'); }
+    } catch (err) { console.error(err); setError('No se pudieron cargar las métricas.'); }
+  }
+
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
+  }, [dateFrom, dateTo]);
+
+  useEffect(() => {
+    if (!data || !timeseriesRef.current || data.timeseries.length === 0) return;
+    if (typeof Chart === 'undefined') return;
+    if (timeseriesChartRef.current) timeseriesChartRef.current.destroy();
+    timeseriesChartRef.current = new Chart(timeseriesRef.current, {
+      type: 'line',
+      data: {
+        labels: data.timeseries.map((t) => t.date),
+        datasets: [{ label: 'Eventos de ataque / día', data: data.timeseries.map((t) => t.count),
+          borderColor: 'rgba(244,63,94,0.9)', backgroundColor: 'rgba(244,63,94,0.15)', fill: true, tension: 0.3 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: '#cbd5e1' } } },
+        scales: {
+          x: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+          y: { ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' }, beginAtZero: true },
+        },
+      },
+    });
+    return () => { if (timeseriesChartRef.current) { timeseriesChartRef.current.destroy(); timeseriesChartRef.current = null; } };
+  }, [data]);
+
+  useEffect(() => {
+    if (!data || !severityRef.current) return;
+    const entries = Object.entries(data.by_severity || {});
+    if (entries.length === 0) return;
+    if (typeof Chart === 'undefined') return;
+    if (severityChartRef.current) severityChartRef.current.destroy();
+    severityChartRef.current = new Chart(severityRef.current, {
+      type: 'doughnut',
+      data: {
+        labels: entries.map(([sev]) => sev),
+        datasets: [{ data: entries.map(([, count]) => count),
+          backgroundColor: entries.map(([sev]) => METRICS_SEVERITY_COLOR[sev] || 'rgba(148,163,184,0.85)') }],
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom', labels: { color: '#cbd5e1' } } } },
+    });
+    return () => { if (severityChartRef.current) { severityChartRef.current.destroy(); severityChartRef.current = null; } };
+  }, [data]);
+
+  if (!data) return <div className="text-slate-500 italic p-6">Cargando métricas...</div>;
+
+  const maxActionCount = Math.max(1, ...Object.values(data.by_action || {}));
+  const maxCategoryCount = Math.max(1, ...(data.by_category || []).map((c) => c.count));
+  const maxCountryCount = Math.max(1, ...(data.by_country || []).map((c) => c.count));
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg p-4 flex flex-wrap items-center gap-3">
+        <h2 className="text-lg font-semibold mr-auto">📊 Métricas de ataques</h2>
+        <label className="flex items-center gap-1 text-xs text-slate-400">
+          Desde
+          <input type="date" value={dateFrom} max={dateTo || undefined}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200" />
+        </label>
+        <label className="flex items-center gap-1 text-xs text-slate-400">
+          Hasta
+          <input type="date" value={dateTo} min={dateFrom || undefined}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200" />
+        </label>
+        {(dateFrom || dateTo) && (
+          <button onClick={() => { setDateFrom(''); setDateTo(''); }}
+            className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
+            Limpiar fechas
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <div className="bg-rose-950/40 border border-rose-800 text-rose-300 text-xs rounded-lg px-4 py-2">⚠️ {error}</div>
+      )}
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">Eventos de ataque</h3>
+          <p className="text-3xl font-extrabold mt-2 text-rose-400">{data.total_events}</p>
+        </div>
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">Atacantes únicos</h3>
+          <p className="text-3xl font-extrabold mt-2 text-blue-400">{data.unique_attackers}</p>
+        </div>
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">Interacciones honeypot</h3>
+          <p className="text-3xl font-extrabold mt-2 text-violet-400">{data.honeypot_interactions}</p>
+        </div>
+        <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 shadow-lg">
+          <h3 className="text-slate-400 text-sm font-medium">IPs bloqueadas (actual)</h3>
+          <p className="text-3xl font-extrabold mt-2 text-emerald-400">{data.blocked_ips}</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <h2 className="text-lg font-semibold mb-3">Eventos en el tiempo</h2>
+          {data.timeseries.length === 0 ? (
+            <p className="text-slate-500 italic text-sm">Sin eventos en el rango seleccionado.</p>
+          ) : typeof Chart === 'undefined' ? (
+            <p className="text-amber-400 italic text-sm">No se pudo cargar Chart.js (CDN externo no disponible). Los datos siguen accesibles en <code className="text-slate-400">/v1/active-defense/metrics</code>.</p>
+          ) : (
+            <div style={{ height: '260px' }}><canvas ref={timeseriesRef}></canvas></div>
+          )}
+        </div>
+        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <h2 className="text-lg font-semibold mb-3">Por severidad</h2>
+          {Object.keys(data.by_severity || {}).length === 0 ? (
+            <p className="text-slate-500 italic text-sm">Sin datos.</p>
+          ) : typeof Chart === 'undefined' ? (
+            <div className="space-y-1">
+              {Object.entries(data.by_severity).map(([sev, count]) => (
+                <div key={sev} className="flex justify-between text-sm">
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${SEVERITY_STYLE[sev] || ''}`}>{sev}</span>
+                  <span>{count}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ height: '220px' }}><canvas ref={severityRef}></canvas></div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <h2 className="text-lg font-semibold mb-3">Acciones aplicadas (bloqueos actuales)</h2>
+          {Object.values(data.by_action || {}).every((v) => v === 0) ? (
+            <p className="text-slate-500 italic text-sm">Sin acciones confirmadas todavía.</p>
+          ) : (
+            <div className="space-y-2">
+              {Object.entries(data.by_action).map(([action, count]) => (
+                <div key={action}>
+                  <div className="flex justify-between text-xs text-slate-400 mb-1">
+                    <span>{RESPONSE_ACTION_LABEL[action] || action}</span><span>{count}</span>
+                  </div>
+                  <div className="h-2 rounded bg-slate-800 overflow-hidden">
+                    <div className="h-full rounded" style={{ width: `${(count / maxActionCount) * 100}%`, backgroundColor: METRICS_ACTION_COLOR[action] || '#64748b' }}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <h2 className="text-lg font-semibold mb-3">Top categorías de ataque</h2>
+          {(data.by_category || []).length === 0 ? (
+            <p className="text-slate-500 italic text-sm">Sin datos.</p>
+          ) : (
+            <div className="space-y-2">
+              {data.by_category.map((c) => (
+                <div key={c.label}>
+                  <div className="flex justify-between text-xs text-slate-400 mb-1">
+                    <span className="truncate">{c.label}</span><span>{c.count}</span>
+                  </div>
+                  <div className="h-2 rounded bg-slate-800 overflow-hidden">
+                    <div className="h-full rounded bg-rose-500" style={{ width: `${(c.count / maxCategoryCount) * 100}%` }}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
+          <h2 className="text-lg font-semibold mb-3">Top países de origen</h2>
+          {(data.by_country || []).length === 0 ? (
+            <p className="text-slate-500 italic text-sm">Sin datos.</p>
+          ) : (
+            <div className="space-y-2">
+              {data.by_country.map((c) => (
+                <div key={c.label}>
+                  <div className="flex justify-between text-xs text-slate-400 mb-1">
+                    <span className="truncate">{c.label}</span><span>{c.count}</span>
+                  </div>
+                  <div className="h-2 rounded bg-slate-800 overflow-hidden">
+                    <div className="h-full rounded bg-blue-500" style={{ width: `${(c.count / maxCountryCount) * 100}%` }}></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ActiveDefensePanel() {
   const [overview, setOverview] = useState(null);
   const [eventLimit, setEventLimit] = useState(10);
   const [attackerLimit, setAttackerLimit] = useState(10);
   const [responding, setResponding] = useState(null); // ip en curso, para desactivar botones
   const [expanded, setExpanded] = useState(null); // ip con detalle de huella abierto
+  const [expandedCampaign, setExpandedCampaign] = useState(null); // nombre de campaña con detalle abierto
   const [whitelist, setWhitelist] = useState([]);
   const [blacklist, setBlacklist] = useState([]);
   const [selectedIps, setSelectedIps] = useState(new Set()); // cualquier IP marcada, bloqueada o no
@@ -1917,8 +2169,13 @@ function ActiveDefensePanel() {
   const [newWlIp, setNewWlIp] = useState('');
   const [newWlReason, setNewWlReason] = useState('');
   const [blacklistLimit, setBlacklistLimit] = useState(10);
+  const [campaignLimit, setCampaignLimit] = useState(10);
+  const [timelineLimit, setTimelineLimit] = useState(10);
+  const [expandedTimelineId, setExpandedTimelineId] = useState(null);
   const [sortBy, setSortBy] = useState(null); // columna de ordenación de la tabla de atacantes, null = orden del backend
   const [sortDir, setSortDir] = useState('desc');
+  const [dateFrom, setDateFrom] = useState(''); // YYYY-MM-DD, filtra "Eventos WAF recientes" (ver /overview date_from/date_to)
+  const [dateTo, setDateTo] = useState('');
 
   function toggleSort(column) {
     if (sortBy === column) {
@@ -1955,7 +2212,8 @@ function ActiveDefensePanel() {
 
   async function load() {
     try {
-      const res = await fetch(`/v1/active-defense/overview?event_limit=${eventLimit}&attacker_limit=${attackerLimit}`);
+      const dateParams = (dateFrom ? `&date_from=${dateFrom}` : '') + (dateTo ? `&date_to=${dateTo}` : '');
+      const res = await fetch(`/v1/active-defense/overview?event_limit=${eventLimit}&attacker_limit=${attackerLimit}&timeline_limit=${timelineLimit}${dateParams}`);
       if (res.ok) setOverview(await res.json());
     } catch (err) { console.error(err); }
   }
@@ -1976,7 +2234,7 @@ function ActiveDefensePanel() {
     loadLists();
     const id = setInterval(load, 5000);
     return () => clearInterval(id);
-  }, [eventLimit, attackerLimit]);
+  }, [eventLimit, attackerLimit, timelineLimit, dateFrom, dateTo]);
 
   async function responder(ip, action) {
     if (!window.confirm(`¿Ejecutar "${RESPONSE_ACTION_LABEL[action]}" sobre ${ip}? Esta acción queda registrada como IOC confirmado.`)) return;
@@ -2256,21 +2514,44 @@ function ActiveDefensePanel() {
       <div className="bg-slate-900 rounded-xl border border-slate-800 shadow-lg overflow-hidden mb-6">
         <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-slate-800">
           <h2 className="text-lg font-semibold">Eventos WAF recientes</h2>
-          <label className="flex items-center gap-2 text-xs text-slate-400">
-            Ver
-            <select value={eventLimit} onChange={(e) => setEventLimit(Number(e.target.value))}
-              className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
-              <option value={10}>10 eventos</option>
-              <option value={50}>50 eventos</option>
-              <option value={100}>100 eventos</option>
-            </select>
-          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-xs text-slate-400">
+              Desde
+              <input type="date" value={dateFrom} max={dateTo || undefined}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200" />
+            </label>
+            <label className="flex items-center gap-1 text-xs text-slate-400">
+              Hasta
+              <input type="date" value={dateTo} min={dateFrom || undefined}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200" />
+            </label>
+            {(dateFrom || dateTo) && (
+              <button onClick={() => { setDateFrom(''); setDateTo(''); }}
+                className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
+                Limpiar fechas
+              </button>
+            )}
+            <label className="flex items-center gap-2 text-xs text-slate-400">
+              Ver
+              <select value={eventLimit} onChange={(e) => setEventLimit(Number(e.target.value))}
+                className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+                <option value={10}>10 eventos</option>
+                <option value={50}>50 eventos</option>
+                <option value={100}>100 eventos</option>
+              </select>
+            </label>
+          </div>
         </div>
         <div className="max-h-80 overflow-y-auto divide-y divide-slate-800">
           {overview.live_attacks.length === 0 ? (
-            <p className="p-4 text-slate-500 italic text-sm">Sin eventos WAF recientes.</p>
+            <p className="p-4 text-slate-500 italic text-sm">
+              {(dateFrom || dateTo) ? 'Sin eventos WAF en el rango de fechas seleccionado.' : 'Sin eventos WAF recientes.'}
+            </p>
           ) : overview.live_attacks.map((event) => (
-            <div key={event.id} className="grid grid-cols-1 sm:grid-cols-4 gap-2 px-4 py-2 text-xs">
+            <div key={event.id} className="grid grid-cols-1 sm:grid-cols-5 gap-2 px-4 py-2 text-xs">
+              <span className="text-slate-500 whitespace-nowrap">{new Date(event.timestamp).toLocaleString('es-ES')}</span>
               <span className="font-mono text-slate-300">{event.raw_payload?.client_ip || '—'}</span>
               <span className="text-slate-400 truncate">{event.summary}</span>
               <span className="text-slate-500 truncate">{event.raw_payload?.attack_category || '—'}</span>
@@ -2316,6 +2597,24 @@ function ActiveDefensePanel() {
                   className="text-xs px-3 py-1.5 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
                   Exportar PDF
                 </button>
+                <label className="flex items-center gap-1 text-xs text-slate-400">
+                  Desde
+                  <input type="date" value={dateFrom} max={dateTo || undefined}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200" />
+                </label>
+                <label className="flex items-center gap-1 text-xs text-slate-400">
+                  Hasta
+                  <input type="date" value={dateTo} min={dateFrom || undefined}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200" />
+                </label>
+                {(dateFrom || dateTo) && (
+                  <button onClick={() => { setDateFrom(''); setDateTo(''); }}
+                    className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
+                    Limpiar fechas
+                  </button>
+                )}
                 <label className="flex items-center gap-2 text-xs text-slate-400">
                   Ver
                   <select value={attackerLimit} onChange={(e) => setAttackerLimit(Number(e.target.value))}
@@ -2432,6 +2731,16 @@ function ActiveDefensePanel() {
                     <div><span className="text-slate-500">Organización ASN:</span> {a.asn_org || '—'}</div>
                     <div><span className="text-slate-500">User-Agent:</span> {a.last_user_agent || '—'}</div>
                     <div><span className="text-slate-500">Referer:</span> {a.referer_host || '—'}</div>
+                    <div>
+                      <span className="text-slate-500">Organización (WHOIS):</span>{' '}
+                      {a.whois_org || a.whois_network_name || (a.intel_fetched_at ? '— (sin datos públicos)' : 'pendiente de consulta')}
+                    </div>
+                    <div>
+                      <span className="text-slate-500">Contacto de abuso:</span>{' '}
+                      {a.whois_abuse_email ? (
+                        <a href={`mailto:${a.whois_abuse_email}`} className="text-blue-400 hover:underline">{a.whois_abuse_email}</a>
+                      ) : (a.intel_fetched_at ? '—' : 'pendiente de consulta')}
+                    </div>
                     {!isWhitelisted && (
                       <div className="sm:col-span-2 flex items-center gap-1 pt-1 border-t border-slate-900 mt-1">
                         <span className="text-slate-500 mr-1">Acción:</span>
@@ -2511,27 +2820,102 @@ function ActiveDefensePanel() {
 
           {overview.campaigns.length > 0 && (
             <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg mb-6">
-              <h2 className="text-lg font-semibold mb-3">Campañas</h2>
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
+                <h2 className="text-lg font-semibold">Campañas</h2>
+                <label className="flex items-center gap-2 text-xs text-slate-400">
+                  Ver
+                  <select value={campaignLimit} onChange={(e) => setCampaignLimit(Number(e.target.value))}
+                    className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+                    <option value={10}>10</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </label>
+              </div>
+              <p className="text-xs text-slate-500 mb-3">Actividad coordinada: 2+ IPs (o una muy activa) compartiendo la misma categoría de ataque. Pincha en una para ver el detalle.</p>
               <div className="space-y-2">
-                {overview.campaigns.map((c) => (
-                  <div key={c.name} className="flex justify-between items-center text-sm border-b border-slate-900 pb-2">
-                    <span>{c.name} <span className="text-slate-500 text-xs">({c.attacker_count} atacantes, {c.event_count} eventos)</span></span>
-                    <span className={`font-bold ${riskColor(c.threat_score)}`}>{c.threat_score}/100</span>
-                  </div>
-                ))}
+                {overview.campaigns.slice(0, campaignLimit).map((c) => {
+                  const isCampOpen = expandedCampaign === c.name;
+                  return (
+                    <div key={c.name} className="border-b border-slate-900 pb-2">
+                      <button onClick={() => setExpandedCampaign(isCampOpen ? null : c.name)}
+                        className="w-full flex justify-between items-center text-sm text-left hover:text-slate-300">
+                        <span>{c.name} <span className="text-slate-500 text-xs">({c.attacker_count} atacantes, {c.event_count} eventos)</span></span>
+                        <span className={`font-bold ${riskColor(c.threat_score)}`}>{c.threat_score}/100</span>
+                      </button>
+                      {isCampOpen && (
+                        <div className="mt-2 mx-1 p-3 rounded-lg bg-slate-950 border border-slate-800 text-xs space-y-2">
+                          <div><span className="text-slate-500">Categoría de ataque:</span> {c.attack_category}</div>
+                          <div><span className="text-slate-500">Eventos totales:</span> {c.event_count} · <span className="text-slate-500">Threat score:</span> <span className={riskColor(c.threat_score)}>{c.threat_score}/100</span></div>
+                          <div>
+                            <span className="text-slate-500 block mb-1">IPs atacantes ({c.attacker_ips.length}):</span>
+                            <div className="flex flex-wrap gap-1">
+                              {c.attacker_ips.map((ip) => {
+                                const a = attackersSorted.find((x) => x.ip === ip);
+                                return (
+                                  <span key={ip}
+                                    title={a ? `${a.country || '—'} · ${a.event_count} eventos · severidad ${a.max_severity} · ${ATTACKER_STATUS_LABEL[a.status] || a.status}` : ip}
+                                    className={`px-1.5 py-0.5 rounded font-mono border ${a ? (STATUS_STYLE[a.status] || 'border-slate-700 text-slate-300') : 'border-slate-700 text-slate-500'}`}>
+                                    {ip}{a && a.country ? ` · ${a.country}` : ''}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
 
           <div className="bg-slate-900 p-5 rounded-xl border border-slate-800 shadow-lg">
-            <h2 className="text-lg font-semibold mb-3">Timeline</h2>
-            <div className="space-y-1 font-mono text-xs max-h-64 overflow-y-auto">
-              {overview.timeline.slice().reverse().map((e) => (
-                <div key={e.id} className="border-b border-slate-900 pb-1 flex justify-between">
-                  <span>{e.summary}</span>
-                  <span className={`px-1.5 rounded ${SEVERITY_STYLE[e.severity] || ''}`}>{e.severity}</span>
-                </div>
-              ))}
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-1">
+              <h2 className="text-lg font-semibold">Timeline</h2>
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                Ver
+                <select value={timelineLimit} onChange={(e) => setTimelineLimit(Number(e.target.value))}
+                  className="bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-200">
+                  <option value={10}>10</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </label>
+            </div>
+            <p className="text-xs text-slate-500 mb-3">Pincha en un evento para ver el detalle completo (regla, ruta, ASN, referer...).</p>
+            <div className="space-y-1 font-mono text-xs max-h-96 overflow-y-auto">
+              {overview.timeline.slice().reverse().map((e) => {
+                const isTlOpen = expandedTimelineId === e.id;
+                const p = e.raw_payload || {};
+                return (
+                  <div key={e.id} className="border-b border-slate-900 pb-1">
+                    <button onClick={() => setExpandedTimelineId(isTlOpen ? null : e.id)}
+                      className="w-full flex justify-between items-center text-left hover:text-slate-300">
+                      <span>{e.summary}</span>
+                      <span className={`px-1.5 rounded shrink-0 ml-2 ${SEVERITY_STYLE[e.severity] || ''}`}>{e.severity}</span>
+                    </button>
+                    {isTlOpen && (
+                      <div className="mt-2 mb-1 p-3 rounded-lg bg-slate-950 border border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1 font-sans text-slate-300">
+                        <div><span className="text-slate-500">Fecha:</span> {e.timestamp ? new Date(e.timestamp).toLocaleString('es-ES') : '—'}</div>
+                        <div><span className="text-slate-500">IP / país:</span> {p.client_ip || '—'} {p.country ? `(${p.country})` : ''}</div>
+                        <div><span className="text-slate-500">Categoría:</span> {p.attack_category || e.event_type || '—'}</div>
+                        <div><span className="text-slate-500">Acción WAF:</span> {p.action || '—'}</div>
+                        <div className="sm:col-span-2"><span className="text-slate-500">Host / ruta:</span> {p.host || e.asset_name || '—'} {p.uri || ''}</div>
+                        <div><span className="text-slate-500">ASN:</span> {p.asn_org || p.asn || '—'}</div>
+                        <div><span className="text-slate-500">Referer:</span> {p.referer_host || '—'}</div>
+                        <div className="sm:col-span-2"><span className="text-slate-500">User-Agent:</span> {p.user_agent || '—'}</div>
+                        {e.description && (
+                          <div className="sm:col-span-2 pt-1 border-t border-slate-900 mt-1">
+                            <span className="text-slate-500">Firma del ataque:</span> {e.description}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </>
@@ -2550,6 +2934,7 @@ const TABS_BASE = [
   { id: 'pyme', label: '🏛️ Ciberseguridad PYME', Component: PymeCybersecurityPanel },
 ];
 const ACTIVE_DEFENSE_TAB = { id: 'active-defense', label: '⚔️ Praxia Active Defense', Component: ActiveDefensePanel };
+const ATTACK_METRICS_TAB = { id: 'attack-metrics', label: '📊 Métricas de ataques', Component: AttackMetricsPanel };
 
 function App() {
   // La pestaña activa se refleja en la URL (#incidents, #chat...) para poder
@@ -2566,7 +2951,14 @@ function App() {
       .then((d) => setActiveDefenseEnabled(!!d.enabled))
       .catch(() => {});
   }, []);
-  const TABS = activeDefenseEnabled ? [...TABS_BASE, ACTIVE_DEFENSE_TAB] : TABS_BASE;
+  // En /demo/dashboard NO se expone el módulo completo (/respond podría
+  // ejecutar una acción real contra Cloudflare, ver siem/router/demo.py) --
+  // pero sí solo la lectura de métricas, para que el prospecto vea el
+  // dashboard de ataques sin poder tocar nada real.
+  const isDemo = window.location.pathname.indexOf('/demo/dashboard') === 0;
+  const TABS = activeDefenseEnabled
+    ? [...TABS_BASE, ACTIVE_DEFENSE_TAB, ATTACK_METRICS_TAB]
+    : (isDemo ? [...TABS_BASE, ATTACK_METRICS_TAB] : TABS_BASE);
   const selectTab = (id) => {
     setTab(id);
     try { history.replaceState(null, '', '#' + id); } catch (e) { /* noop */ }

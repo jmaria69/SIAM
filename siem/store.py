@@ -12,13 +12,14 @@ Eso es lo que compró tener un patrón repositorio desde el principio.
 from __future__ import annotations
 
 import datetime as dt
-from typing import List, Optional
+from collections import defaultdict
+from typing import List, Optional, Sequence
 
 from fastapi import Depends
 from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
-from siem.active_defense import SEVERITY_ORDER, WAF_SOURCES
+from siem.active_defense import ATTACK_SOURCES, RESPONSE_ACTIONS, SEVERITY_ORDER, WAF_SOURCES
 from siem.database import get_db
 from siem.db_models import (
     AggregatorCursorDB,
@@ -160,6 +161,10 @@ def _row_to_attacker_profile(row: AttackerProfileDB) -> dict:
         "last_uri": row.last_uri,
         "last_user_agent": row.last_user_agent,
         "referer_host": row.referer_host,
+        "whois_org": row.whois_org,
+        "whois_network_name": row.whois_network_name,
+        "whois_abuse_email": row.whois_abuse_email,
+        "intel_fetched_at": row.intel_fetched_at,
     }
 
 
@@ -316,8 +321,22 @@ class SiemStore:
         self.db.commit()
         return event
 
-    def list_events(self, limit: int = 200) -> List[Event]:
-        rows = self.db.query(EventDB).order_by(EventDB.timestamp.desc()).limit(limit).all()
+    def list_events(
+        self,
+        limit: int = 200,
+        *,
+        sources: Optional[Sequence[str]] = None,
+        date_from: Optional[dt.datetime] = None,
+        date_to: Optional[dt.datetime] = None,
+    ) -> List[Event]:
+        query = self.db.query(EventDB)
+        if sources:
+            query = query.filter(EventDB.source.in_(sources))
+        if date_from is not None:
+            query = query.filter(EventDB.timestamp >= date_from)
+        if date_to is not None:
+            query = query.filter(EventDB.timestamp <= date_to)
+        rows = query.order_by(EventDB.timestamp.desc()).limit(limit).all()
         return [_row_to_event(r) for r in rows]
 
     # -- Perfiles de atacante (siem/attacker_aggregator.py) -------------------
@@ -378,6 +397,38 @@ class SiemStore:
             .all()
         )
         return [_row_to_attacker_profile(r) for r in rows]
+
+    def list_repeat_offender_profiles(self, min_event_count: int, limit: int = 500) -> List[dict]:
+        """IPs que ya cruzaron el umbral de reincidencia (ver
+        active_defense.PATTERN_REPEAT_OFFENDER_EVENTS) -- usado por
+        siem/attacker_aggregator.py::apply_auto_responses para decidir a
+        quién enriquecer/auto-honeypotear. La escala actual (cientos de IPs,
+        no miles) hace innecesario un cursor propio: idempotencia real la da
+        _blocked_ips en el caller, no esta consulta."""
+        rows = (
+            self.db.query(AttackerProfileDB)
+            .filter(AttackerProfileDB.event_count >= min_event_count)
+            .order_by(AttackerProfileDB.threat_score.desc())
+            .limit(limit)
+            .all()
+        )
+        return [_row_to_attacker_profile(r) for r in rows]
+
+    def save_attacker_intel(
+        self, ip: str, *, org: Optional[str], network_name: Optional[str], abuse_email: Optional[str],
+    ) -> None:
+        """Guarda el resultado (con o sin datos útiles) del lookup RDAP de
+        siem/ip_intel.py y marca intel_fetched_at -- así aunque la consulta
+        no devuelva nada (None) no se reintenta en cada tick, solo si algún
+        día se decide invalidar el caché a mano."""
+        row = self.db.get(AttackerProfileDB, ip)
+        if row is None:
+            return
+        row.whois_org = org
+        row.whois_network_name = network_name
+        row.whois_abuse_email = abuse_email
+        row.intel_fetched_at = dt.datetime.utcnow()
+        self.db.commit()
 
     # -- Incidents -----------------------------------------------------------
     def add_incident(self, incident: Incident) -> Incident:
@@ -501,6 +552,73 @@ class SiemStore:
     def eventos_ultimo_minuto(self) -> int:
         cutoff = dt.datetime.utcnow() - dt.timedelta(minutes=1)
         return self.db.query(EventDB).filter(EventDB.timestamp >= cutoff).count()
+
+    # -- Dashboard de métricas de Active Defense (siem/router/active_defense.py::metrics) --
+    def attack_metrics(
+        self,
+        date_from: Optional[dt.datetime] = None,
+        date_to: Optional[dt.datetime] = None,
+        top_n: int = 8,
+        limit: int = 20000,
+    ) -> dict:
+        """A diferencia de attacker_profiles (rollup incremental sin dimensión
+        de fecha, solo WAF_SOURCES -- ver aggregate_attacker_profiles), esto
+        agrupa en memoria sobre ATTACK_SOURCES (WAF + honeypot) ya filtrado por
+        rango de fechas en SQL, así que se puede recalcular para cualquier
+        ventana que pida el SOC sin tocar el rollup persistente. `limit` acota
+        el coste igual que el resto de agregaciones de este store (ver
+        aggregate_attacker_profiles/list_events): una ventana con más eventos
+        que eso se trunca a los más recientes.
+        """
+        events = self.list_events(limit=limit, sources=ATTACK_SOURCES, date_from=date_from, date_to=date_to)
+
+        severity_counts: dict[str, int] = defaultdict(int)
+        category_counts: dict[str, int] = defaultdict(int)
+        country_counts: dict[str, int] = defaultdict(int)
+        day_counts: dict[str, int] = defaultdict(int)
+        unique_ips: set[str] = set()
+        honeypot_interactions = 0
+
+        for event in events:
+            payload = event.raw_payload or {}
+            ip = payload.get("client_ip")
+            if ip:
+                unique_ips.add(ip)
+            severity_counts[event.severity] += 1
+            category = payload.get("attack_category")
+            if category:
+                category_counts[category] += 1
+            country = payload.get("country")
+            if country:
+                country_counts[country] += 1
+            day_counts[event.timestamp.strftime("%Y-%m-%d")] += 1
+            if event.source == "honeypot":
+                honeypot_interactions += 1
+
+        by_action: dict[str, int] = {action: 0 for action in RESPONSE_ACTIONS}
+        blocked_ips = 0
+        for ioc in self.list_iocs():
+            if ioc.type != "ip":
+                continue
+            blocked_ips += 1
+            if ioc.action in by_action:
+                by_action[ioc.action] += 1
+
+        def _top(counts: dict[str, int]) -> List[dict]:
+            ranked = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+            return [{"label": label, "count": count} for label, count in ranked]
+
+        return {
+            "total_events": len(events),
+            "unique_attackers": len(unique_ips),
+            "honeypot_interactions": honeypot_interactions,
+            "blocked_ips": blocked_ips,
+            "by_severity": dict(severity_counts),
+            "by_category": _top(category_counts),
+            "by_country": _top(country_counts),
+            "by_action": by_action,
+            "timeseries": [{"date": day, "count": count} for day, count in sorted(day_counts.items())],
+        }
 
     # -- Campañas de concienciación -------------------------------------------------
     def add_campaign(self, campaign: Campaign) -> Campaign:

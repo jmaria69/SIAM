@@ -22,7 +22,7 @@ from siem.active_defense import (
     attacker_from_profile,
     pattern_flags,
 )
-from siem.attacker_aggregator import aggregate_once
+from siem.attacker_aggregator import aggregate_once, apply_auto_responses
 from siem.config import Settings, get_settings
 from siem.main import app
 from siem.models import Event, Severity
@@ -195,3 +195,138 @@ def test_overview_marks_repeat_offender_pattern_flag(client):
         assert "reincidente" in attacker["pattern_flags"]
     finally:
         _disable_module()
+
+
+# ---------------------------------------------------------------------------
+# apply_auto_responses -- auto-honeypot de reincidentes + enriquecimiento
+# WHOIS/RDAP (siem/attacker_aggregator.py + siem/response_actions.py +
+# siem/ip_intel.py). Sin credenciales de Cloudflare configuradas, HONEYPOT
+# se queda simulado pero igualmente registra el IOC -- suficiente para
+# comprobar la lógica de decisión sin mockear la red.
+# ---------------------------------------------------------------------------
+
+def _settings(**overrides) -> Settings:
+    base = dict(
+        AI_PROVIDER="none", SMTP_HOST=None, ALERT_EMAIL_TO=None,
+        CLOUDFLARE_API_TOKEN=None, CLOUDFLARE_ZONE_ID=None,
+        PRAXIA_ACTIVE_DEFENSE_ENABLED=True,
+        PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS=False,
+        PRAXIA_IP_INTEL_ENABLED=False,
+    )
+    base.update(overrides)
+    return Settings(**base)
+
+
+def _seed_repeat_offender(store: SiemStore, ip: str = "8.8.8.8") -> None:
+    for _ in range(PATTERN_REPEAT_OFFENDER_EVENTS):
+        store.add_event(_waf_event(ip=ip))
+    aggregate_once(store)
+
+
+def test_apply_auto_responses_does_nothing_when_flags_disabled():
+    db = _Session()
+    try:
+        store = SiemStore(db)
+        _seed_repeat_offender(store)
+        acted = apply_auto_responses(store, _settings())
+        assert acted == []
+        assert store.list_iocs() == []
+    finally:
+        db.close()
+
+
+def test_apply_auto_responses_honeypots_repeat_offenders_when_enabled():
+    db = _Session()
+    try:
+        store = SiemStore(db)
+        _seed_repeat_offender(store, ip="8.8.8.8")
+        acted = apply_auto_responses(store, _settings(PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS=True))
+        assert acted == ["8.8.8.8"]
+
+        iocs = store.list_iocs()
+        assert len(iocs) == 1
+        assert iocs[0].value == "8.8.8.8"
+        assert iocs[0].action == "HONEYPOT"
+        assert iocs[0].confidence == "media"
+        assert "reincidente" in iocs[0].campaign
+
+        # Reconfirmar en el siguiente tick no debe duplicar el IOC.
+        acted_again = apply_auto_responses(store, _settings(PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS=True))
+        assert acted_again == []
+        assert len(store.list_iocs()) == 1
+    finally:
+        db.close()
+
+
+def test_apply_auto_responses_skips_whitelisted_ips():
+    from siem.models import WhitelistEntry
+
+    db = _Session()
+    try:
+        store = SiemStore(db)
+        _seed_repeat_offender(store, ip="8.8.8.8")
+        store.add_whitelist_entry(WhitelistEntry(ip="8.8.8.8", reason="proveedor"))
+
+        acted = apply_auto_responses(store, _settings(PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS=True))
+        assert acted == []
+        assert store.list_iocs() == []
+    finally:
+        db.close()
+
+
+def test_apply_auto_responses_skips_already_blocked_ips():
+    from siem.models import IOC
+
+    db = _Session()
+    try:
+        store = SiemStore(db)
+        _seed_repeat_offender(store, ip="8.8.8.8")
+        store.add_ioc(IOC(type="ip", value="8.8.8.8", confidence="alta", action="BLOCK"))
+
+        acted = apply_auto_responses(store, _settings(PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS=True))
+        assert acted == []
+        # el BLOCK manual sigue intacto, no se sustituye por el auto-honeypot
+        iocs = store.list_iocs()
+        assert len(iocs) == 1
+        assert iocs[0].action == "BLOCK"
+    finally:
+        db.close()
+
+
+def test_apply_auto_responses_enriches_repeat_offenders_with_ip_intel(monkeypatch):
+    db = _Session()
+    try:
+        store = SiemStore(db)
+        _seed_repeat_offender(store, ip="8.8.8.8")
+
+        monkeypatch.setattr(
+            "siem.ip_intel.lookup_ip",
+            lambda ip: {"org": "Google LLC", "network_name": "GOOGLE", "abuse_email": "abuse@google.com"},
+        )
+        apply_auto_responses(store, _settings(PRAXIA_IP_INTEL_ENABLED=True))
+
+        profile = store.list_attacker_profiles()[0]
+        assert profile["whois_org"] == "Google LLC"
+        assert profile["whois_network_name"] == "GOOGLE"
+        assert profile["whois_abuse_email"] == "abuse@google.com"
+        assert profile["intel_fetched_at"] is not None
+    finally:
+        db.close()
+
+
+def test_apply_auto_responses_does_not_retry_ip_intel_once_fetched(monkeypatch):
+    db = _Session()
+    try:
+        store = SiemStore(db)
+        _seed_repeat_offender(store, ip="8.8.8.8")
+
+        calls = []
+        monkeypatch.setattr(
+            "siem.ip_intel.lookup_ip",
+            lambda ip: calls.append(ip) or None,
+        )
+        apply_auto_responses(store, _settings(PRAXIA_IP_INTEL_ENABLED=True))
+        apply_auto_responses(store, _settings(PRAXIA_IP_INTEL_ENABLED=True))
+        assert calls == ["8.8.8.8"]  # solo se intenta una vez, incluso sin datos útiles
+    finally:
+        db.close()

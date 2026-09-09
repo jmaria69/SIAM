@@ -38,6 +38,13 @@ _ACTION_BY_SEVERITY = {
 
 WAF_SOURCES = ("waf-cloudflare", "waf-coraza")
 
+# Para el dashboard de métricas (siem/router/active_defense.py::metrics):
+# incluye también el honeypot, que WAF_SOURCES deja fuera a propósito (el
+# honeypot no participa en la agrupación por atacante/campaña ni en la
+# sugerencia de respuesta -- ver siem/router/honeypot.py -- pero sigue siendo
+# una interacción de ataque real que interesa contar).
+ATTACK_SOURCES = WAF_SOURCES + ("honeypot",)
+
 
 def suggest_response(max_severity: Severity) -> str:
     """Decisión determinista (sin IA), mismo criterio que threat_detection.py."""
@@ -183,6 +190,10 @@ def attacker_from_profile(
         "referer_host": profile.get("referer_host"),
         "active_days": len(profile.get("active_days") or []),
         "pattern_flags": pattern_flags(profile),
+        "whois_org": profile.get("whois_org"),
+        "whois_network_name": profile.get("whois_network_name"),
+        "whois_abuse_email": profile.get("whois_abuse_email"),
+        "intel_fetched_at": profile.get("intel_fetched_at"),
     }
 
 
