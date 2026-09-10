@@ -13,10 +13,16 @@ tests no queremos depender del .env real.
 """
 import pyotp
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from siem.auth import hash_password
 from siem.config import Settings, get_settings
+from siem.database import Base
 from siem.main import create_app
+from siem.router.demo import get_demo_store
+from siem.store import SiemStore
 
 TOTP_SECRET = pyotp.random_base32()
 BASIC_AUTH = dict(
@@ -190,9 +196,27 @@ def test_logout_borra_la_sesion():
 def test_demo_sigue_publica_con_auth_activa():
     client = _client()
 
-    assert client.get("/demo").status_code == 200
-    assert client.get("/demo/dashboard").status_code == 200
-    assert client.get("/demo/v1/monitoring/overview").status_code == 200
+    # La demo apunta por defecto al siam_demo.db REAL (siem/router/demo.py) y
+    # su seed escribe en él -- este test solo verifica que /demo/* sigue
+    # pública con auth activa, sin depender de ese fichero (ni de sus
+    # permisos), así que apuntamos get_demo_store a una base en memoria.
+    demo_engine = create_engine(
+        "sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    Base.metadata.create_all(bind=demo_engine)
+    demo_session = sessionmaker(bind=demo_engine)()
+
+    def _override_demo_store():
+        yield SiemStore(demo_session)
+
+    client.app.dependency_overrides[get_demo_store] = _override_demo_store
+    try:
+        assert client.get("/demo").status_code == 200
+        assert client.get("/demo/dashboard").status_code == 200
+        assert client.get("/demo/v1/monitoring/overview").status_code == 200
+    finally:
+        client.app.dependency_overrides.pop(get_demo_store, None)
+        demo_session.close()
 
 
 def test_honeypot_sigue_publico_con_auth_activa():

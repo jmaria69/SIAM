@@ -19,10 +19,11 @@ import logging
 import os
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from siem.config import Settings, get_settings
@@ -38,6 +39,7 @@ from siem.router.incidents import list_incidents as _incidents_list
 from siem.router.incidents import reconstruct_kill_chain as _incidents_kill_chain
 from siem.router.incidents import update_incident as _incidents_update
 from siem.router.active_defense import metrics as _active_defense_metrics
+from siem.router.honeypot import sessions_payload as _honeypot_sessions_payload
 from siem.router.monitoring import get_overview as _monitoring_overview
 from siem.router.monitoring import get_timeseries as _monitoring_timeseries
 from siem.router.monitoring import ingest_event as _monitoring_ingest
@@ -91,7 +93,22 @@ def _get_demo_db():
         Base.metadata.create_all(bind=_demo_engine)
         seed_db = _DemoSessionLocal()
         try:
-            seed_demo_data(SiemStore(seed_db))
+            try:
+                seed_demo_data(SiemStore(seed_db))
+            except OperationalError as exc:
+                # El sembrado es best-effort: los endpoints /demo/v1/* son de
+                # SOLO LECTURA para el prospecto y NUNCA deben devolver 500.
+                # Si siam_demo.db resulta solo-lectura en disco (p.ej. un
+                # fichero propiedad de root servido por un usuario normal
+                # fuera del contenedor raíz), degradamos: el panel sirve lo
+                # que ya haya en la base sin sembrar, en vez de tumbar la
+                # demo. Hasta que ese fichero no sea escribible, no se
+                # reintenta (la bandera ya está puesta). Devolver los datos
+                # viejos > crashear al visitante.
+                if "readonly" not in str(exc).lower():
+                    raise
+                logger.warning("siam_demo.db es solo lectura (%s) -- demo servida sin sembrado.", exc)
+                seed_db.rollback()
         finally:
             seed_db.close()
         _demo_db_ready = True
@@ -258,6 +275,31 @@ def demo_active_defense_metrics(
     date_from: str | None = None, date_to: str | None = None, store: SiemStore = Depends(get_demo_store),
 ) -> dict:
     return _active_defense_metrics(date_from=date_from, date_to=date_to, store=store)
+
+
+# Honeypot (panel de análisis del señuelo): SOLO lectura sobre la base de
+# datos de la demo, reutilizando exactamente el mismo payload que el panel
+# real. Aquí no existe el lado atacante (el POST a /admin no se monta: un
+# visitante anónimo de la demo no debe poder ni simular señuelo), solo la
+# lectura de las sesiones sembradas a mano (ver siem/demo_seed.py).
+@router.get("/demo/v1/honeypot/sessions")
+def demo_honeypot_sessions(
+    ip: str | None = Query(None, description="Filtra sesiones de una IP de origen"),
+    date_from: str | None = Query(None, description="YYYY-MM-DD"),
+    date_to: str | None = Query(None, description="YYYY-MM-DD (inclusive)"),
+    limit: int = Query(500, ge=1, le=5000),
+    store: SiemStore = Depends(get_demo_store),
+) -> dict:
+    return _honeypot_sessions_payload(store, ip=ip, date_from=date_from, date_to=date_to, limit=limit)
+
+
+@router.get("/demo/v1/honeypot/sessions/{session_id}")
+def demo_honeypot_session_detail(session_id: str, store: SiemStore = Depends(get_demo_store)) -> dict:
+    payload = _honeypot_sessions_payload(store, ip=None, date_from=None, date_to=None, limit=5000)
+    for session in payload["sessions"]:
+        if session["session_id"] == session_id:
+            return {"session": session}
+    raise HTTPException(status_code=404, detail="Sesión no encontrada")
 
 
 # /demo/v1/pyme/* -- el motor de Ciberseguridad PYME es un conjunto de

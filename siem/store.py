@@ -339,6 +339,29 @@ class SiemStore:
         rows = query.order_by(EventDB.timestamp.desc()).limit(limit).all()
         return [_row_to_event(r) for r in rows]
 
+    def list_honeypot_events(
+        self,
+        limit: int = 20000,
+        *,
+        date_from: Optional[dt.datetime] = None,
+        date_to: Optional[dt.datetime] = None,
+    ) -> List[Event]:
+        """Eventos del panel señuelo (source=="honeypot") en orden ASC.
+
+        A diferencia de list_events (orden DESC, para "lo más reciente
+        primero"), el rollup de sesiones (siem/honeypot_sessions.py::
+        build_sessions) necesita el recorrido en orden cronológico, así que
+        esto ordena ASC con desempate por id. Filtros de fecha opcionales,
+        mismo criterio que attack_metrics."""
+
+        query = self.db.query(EventDB).filter(EventDB.source == "honeypot")
+        if date_from is not None:
+            query = query.filter(EventDB.timestamp >= date_from)
+        if date_to is not None:
+            query = query.filter(EventDB.timestamp <= date_to)
+        rows = query.order_by(EventDB.timestamp.asc(), EventDB.id.asc()).limit(limit).all()
+        return [_row_to_event(r) for r in rows]
+
     # -- Perfiles de atacante (siem/attacker_aggregator.py) -------------------
     def aggregate_attacker_profiles(self, batch_size: int = 2000) -> int:
         """Procesa hasta `batch_size` eventos WAF nuevos (desde el cursor

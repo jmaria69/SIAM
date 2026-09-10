@@ -27,10 +27,14 @@ from siem.store import SiemStore
 
 
 def seed_demo_data(store: SiemStore) -> None:
-    if store.list_incidents():
-        return
-
     now = dt.datetime.utcnow()
+    if store.list_incidents():
+        # BD ya sembrada en un arranque anterior (la guarda de abajo, que
+        # evita duplicar incidentes, NO se ejecuta): retroalimentamos igual-
+        # mente las jornadas del honeypot si faltan -- la pestaña Honeypot se
+        # añadió después (2026-09-10) y un siam_demo.db viejo quedaría vacía.
+        _backfill_honeypot_journeys(store, now=now)
+        return
 
     web = store.add_asset(
         Asset(name="srv-web-01", type="servidor", criticality=AssetCriticality.ALTA, owner="Equipo IT")
@@ -238,6 +242,108 @@ def seed_demo_data(store: SiemStore) -> None:
                 )
             )
 
+    _backfill_honeypot_journeys(store, now=now)
+
     # IP ya bloqueada de ejemplo -- para que "IPs bloqueadas" del dashboard
     # de métricas no salga siempre a cero.
     store.add_ioc(IOC(type="ip", value="203.0.113.9", confidence="alta", action="BLOCK"))
+
+
+def _backfill_honeypot_journeys(store: SiemStore, now: dt.datetime | None = None) -> None:
+    """Jornadas de honeypot CURADAS con recorrido completo -- son las que
+    muestra la pestaña "🍯 Honeypot" de la demo (panel de análisis del
+    señuelo, ver siem/honeypot_sessions.py). Hechas a mano a propósito,
+    como el resto del seed: tres arquetipos de atacante (explorador lento,
+    matraz de credenciales sin JS, explorador metódico que llega al final
+    del señuelo) para que el prospecto vea "cómo va" la interacción y las
+    credenciales capturadas. Los timestamps y elapsed_ms son coherentes
+    entre sí (no aleatorios), igual que la historia de los incidentes.
+
+    Idempotente por diseño: si el recorrido del arquetipo "explorer" ya
+    existe, no duplica. Se llama también desde el guard de seed_demo_data
+    cuando la base ya estaba sembrada, para que un siam_demo.db antiguo
+    reciba las jornadas sin re-sembrar incidentes (y sin duplicarlas en
+    siguientes arranques).
+    """
+    if any(
+        e.event_type == "honeypot.login_attempt"
+        and (e.raw_payload or {}).get("session_id") == "sis-demo-explorer"
+        for e in store.list_honeypot_events()
+    ):
+        return
+
+    now = now or dt.datetime.utcnow()
+    _asof = now - dt.timedelta(hours=3)
+    _journeys = [
+        # Arquetipo 1: humano curioso, llega al fondo del señuelo (depth 3).
+        {
+            "session_id": "sis-demo-explorer", "ip": "198.51.100.77",
+            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36",
+            "at": _asof, "events": [
+                ("view", Severity.HIGH, None, 0),
+                ("login", Severity.CRITICAL, {"usuario": "admin", "password": "admin123"}, 14000),
+                ("step", Severity.MEDIUM, {"step": "phpmyadmin"}, 42000),
+                ("login", Severity.CRITICAL, {"usuario": "root", "password": "p@ssw0rd"}, 55000),
+                ("step", Severity.MEDIUM, {"step": "config"}, 78000),
+                ("step", Severity.MEDIUM, {"step": "upload"}, 105000),
+            ],
+        },
+        # Arquetipo 2: matraz automatizado sin JS -- solo martillea login.
+        {
+            "session_id": "sis-demo-bruteforce", "ip": "203.0.113.9",
+            "ua": "python-requests/2.31",
+            "at": now - dt.timedelta(hours=6), "events": [
+                ("view", Severity.HIGH, None, 0),
+                ("login", Severity.CRITICAL, {"usuario": "admin", "password": "123456"}, 2000),
+                ("login", Severity.CRITICAL, {"usuario": "admin", "password": "admin"}, 4000),
+                ("login", Severity.CRITICAL, {"usuario": "root", "password": "toor"}, 6000),
+            ],
+        },
+        # Arquetipo 3: humano metódico que prueba módulos sin cruzar el límite.
+        {
+            "session_id": "sis-demo-methodical", "ip": "192.0.2.55",
+            "ua": "Mozilla/5.0 (X11; Linux x86_64) Firefox/127.0",
+            "at": now - dt.timedelta(hours=1), "events": [
+                ("view", Severity.HIGH, None, 0),
+                ("login", Severity.CRITICAL, {"usuario": "admin", "password": "admin"}, 30000),
+                ("step", Severity.MEDIUM, {"step": "phpmyadmin"}, 90000),
+                ("step", Severity.MEDIUM, {"step": "logs"}, 120000),
+                ("step", Severity.MEDIUM, {"step": "config"}, 150000),
+                ("step", Severity.MEDIUM, {"step": "upload"}, 180000),
+            ],
+        },
+    ]
+    for journey in _journeys:
+        for i, (kind, sev, extra, elapsed) in enumerate(journey["events"]):
+            ts = journey["at"] + dt.timedelta(seconds=elapsed / 1000 if elapsed else 0)
+            if kind == "view":
+                event_type, payload_extra = "honeypot.view", {}
+            elif kind == "login":
+                # Mismas claves que escribe el router real (siem/router/
+                # honeypot.py::_log): usuario_probado/password_probada, no los
+                # nombres del formulario -- si no, siem/honeypot_sessions.py
+                # no los reconoce como credenciales probadas.
+                event_type, payload_extra = "honeypot.login_attempt", {
+                    "usuario_probado": extra["usuario"], "password_probada": extra["password"],
+                }
+            else:
+                event_type, payload_extra = "honeypot.step", extra
+            payload = {
+                "client_ip": journey["ip"],
+                "path": "/admin",
+                "user_agent": journey["ua"],
+                "session_id": journey["session_id"],
+                "elapsed_ms": elapsed,
+                "country": "CN" if journey["ip"] == "198.51.100.77" else ("RU" if journey["ip"] == "203.0.113.9" else "VN"),
+                **payload_extra,
+            }
+            store.add_event(
+                Event(
+                    source="honeypot",
+                    event_type=event_type,
+                    severity=sev,
+                    summary=f"{'Paso ' + str(extra.get('step')) if kind == 'step' else ('Intento de login' if kind == 'login' else 'Visita al panel señuelo')} desde {journey['ip']}",
+                    timestamp=ts,
+                    raw_payload=payload,
+                )
+            )
