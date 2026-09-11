@@ -136,6 +136,34 @@ def overview(
     }
 
 
+@router.get("/overview/export", dependencies=[Depends(_require_enabled)])
+def overview_export(
+    date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    date_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
+    store: SiemStore = Depends(get_store),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """Exporta todos los atacantes (sin límite attacker_limit) para el rango de fechas.
+    Usado por el frontend al exportar CSV/PDF para obtener el conjunto completo."""
+    parsed_from, parsed_to = _parse_date_range(date_from, date_to)
+    waf_events = store.list_events(limit=10000, sources=WAF_SOURCES, date_from=parsed_from, date_to=parsed_to)
+
+    if parsed_from is not None or parsed_to is not None:
+        attackers = list_attackers(
+            waf_events, blocked_ips=_blocked_ips(store), whitelisted_ips=_whitelisted_ips(store),
+        )
+    else:
+        store.aggregate_attacker_profiles()
+        apply_auto_responses(store, settings)
+        profiles = store.list_attacker_profiles(limit=1000)
+        attackers = [
+            attacker_from_profile(p, blocked_ips=_blocked_ips(store), whitelisted_ips=_whitelisted_ips(store))
+            for p in profiles
+        ]
+
+    return {"attackers": attackers, "date_from": date_from, "date_to": date_to}
+
+
 @router.get("/metrics", dependencies=[Depends(_require_enabled)])
 def metrics(
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD"),

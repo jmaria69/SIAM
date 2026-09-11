@@ -2176,6 +2176,8 @@ function ActiveDefensePanel() {
   const [sortDir, setSortDir] = useState('desc');
   const [dateFrom, setDateFrom] = useState(''); // YYYY-MM-DD, filtra "Eventos WAF recientes" (ver /overview date_from/date_to)
   const [dateTo, setDateTo] = useState('');
+  const [showAllAttackers, setShowAllAttackers] = useState(false); // si true, muestra todas las IPs (desde /overview/export)
+  const [allAttackers, setAllAttackers] = useState(null); // cache de todas las IPs para exportar
 
   function toggleSort(column) {
     if (sortBy === column) {
@@ -2218,6 +2220,20 @@ function ActiveDefensePanel() {
     } catch (err) { console.error(err); }
   }
 
+  async function loadAllAttackers() {
+    if (!dateFrom && !dateTo) return; // solo tiene sentido con filtro de fechas
+    try {
+      const qs = [];
+      if (dateFrom) qs.push(`date_from=${dateFrom}`);
+      if (dateTo) qs.push(`date_to=${dateTo}`);
+      const res = await fetch(`/v1/active-defense/overview/export${qs.length ? '?' + qs.join('&') : ''}`);
+      if (res.ok) {
+        const data = await res.json();
+        setAllAttackers(data.attackers || []);
+      }
+    } catch (err) { console.error(err); }
+  }
+
   async function loadLists() {
     try {
       const [wl, bl] = await Promise.all([
@@ -2232,6 +2248,7 @@ function ActiveDefensePanel() {
   useEffect(() => {
     load();
     loadLists();
+    loadAllAttackers();
     const id = setInterval(load, 5000);
     return () => clearInterval(id);
   }, [eventLimit, attackerLimit, timelineLimit, dateFrom, dateTo]);
@@ -2242,6 +2259,7 @@ function ActiveDefensePanel() {
     setSelectedIps(new Set());
     setRowAction({});
     setExpanded(null);
+    setShowAllAttackers(false); // reset view mode when filters change
   }, [dateFrom, dateTo, attackerLimit]);
 
   async function responder(ip, action) {
@@ -2324,8 +2342,13 @@ function ActiveDefensePanel() {
     return selectedIps.size === 0 ? attackers : attackers.filter(a => selectedIps.has(a.ip));
   }
 
+  function getExportAttackers() {
+    // Si hay allAttackers cargados (modo fecha), úsalos; si no, usa lo que muestra la tabla
+    return allAttackers && allAttackers.length > 0 ? allAttackers : attackersSorted;
+  }
+
   function exportCsv(attackers, blockedByIp) {
-    const list = attackersForExport(attackers);
+    const list = attackersForExport(getExportAttackers());
     if (list.length === 0) return;
     const headers = ['IP', 'País', 'ASN', 'Organización ASN', 'Eventos', 'Severidad', 'Estado', 'Acción sugerida', 'Acción ejecutada', 'Primera actividad', 'Última actividad'];
     const rows = list.map(a => {
@@ -2355,7 +2378,7 @@ function ActiveDefensePanel() {
   }
 
   function exportPdf(attackers, blockedByIp) {
-    const list = attackersForExport(attackers);
+    const list = attackersForExport(getExportAttackers());
     if (list.length === 0) return;
     const generado = new Date().toLocaleString('es-ES');
     const dateSuffix = (dateFrom && dateTo) ? ` del ${dateFrom} al ${dateTo}` : (dateFrom ? ` desde el ${dateFrom}` : (dateTo ? ` hasta el ${dateTo}` : ''));
@@ -2494,7 +2517,7 @@ function ActiveDefensePanel() {
 
   const blockedByIp = {};
   blacklist.forEach((entry) => { blockedByIp[entry.value] = entry; });
-  const attackersSorted = sortAttackers(overview.attackers);
+  const attackersSorted = sortAttackers(showAllAttackers && allAttackers ? allAttackers : overview.attackers);
 
   return (
     <div>
@@ -2623,6 +2646,15 @@ function ActiveDefensePanel() {
                   <button onClick={() => { setDateFrom(''); setDateTo(''); }}
                     className="text-xs px-2 py-1 rounded border border-slate-700 text-slate-300 hover:bg-slate-800">
                     Limpiar fechas
+                  </button>
+                )}
+                {(dateFrom || dateTo) && (
+                  <button onClick={() => {
+                    if (!showAllAttackers && (!allAttackers || allAttackers.length === 0)) loadAllAttackers();
+                    setShowAllAttackers(!showAllAttackers);
+                  }}
+                    className="text-xs px-3 py-1.5 rounded border border-blue-700 text-blue-300 hover:bg-blue-900">
+                    {showAllAttackers ? `Ver solo ${attackerLimit} atacantes` : 'Ver todas las IPs de la fecha'}
                   </button>
                 )}
                 <label className="flex items-center gap-2 text-xs text-slate-400">
