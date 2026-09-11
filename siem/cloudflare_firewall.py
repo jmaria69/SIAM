@@ -198,7 +198,10 @@ def sync_honeypot_rule(settings: Settings, ips: set[str], target_url: str) -> No
     if ips:
         rules = [{
             "description": "SIAM Active Defense - HONEYPOT",
-            "expression": _ip_set_expression("ip.src", ips),
+            # Guard antibucle: sin él, una IP honeypoteada que pida /admin
+            # (después del redirect) vuelve a caer en la regla → 307 → /admin
+            # → ... y el señuelo es inalcanzable para su propia víctima.
+            "expression": f"{_ip_set_expression('ip.src', ips)} and not http.request.uri.path eq \"/admin\"",
             "action": "redirect",
             "action_parameters": {
                 "from_value": {
