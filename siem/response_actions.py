@@ -21,6 +21,7 @@ from siem.cloudflare_firewall import (
     is_configured,
     is_rate_limit_configured,
     sync_honeypot_rule,
+    sync_honeypot_waf,
     sync_rate_limit_rule,
 )
 from siem.config import Settings
@@ -48,7 +49,11 @@ def shared_rule_configured(action: str, settings: Settings) -> bool:
 
 def sync_shared_rule(action: str, settings: Settings, ips: set[str]) -> None:
     if action == "HONEYPOT":
+        # Redirección al señuelo + exención del WAF managed (si no, el OWASP
+        # bloquea a la IP antes de que llegue al /admin del decoy -- los
+        # ataques a /admin quedan fuera de la redirección por el guard).
         sync_honeypot_rule(settings, ips, target_url=f"{settings.CAMPAIGN_BASE_URL}{HONEYPOT_PATH}")
+        sync_honeypot_waf(settings, ips)
     elif action == "RATE_LIMIT":
         sync_rate_limit_rule(settings, ips)
 

@@ -215,6 +215,80 @@ def sync_honeypot_rule(settings: Settings, ips: set[str], target_url: str) -> No
 
 
 # ---------------------------------------------------------------------------
+# HONEYPOT -> exención del WAF managed. La fase http_request_firewall_custom
+# (reglas custom + IP Access Rules) y http_request_firewall_managed (OWASP)
+# pueden bloquear con 403 a una IP honeypoteada ANTES de que llegue al
+# señuelo: los ataques a /admin (que el guard del redirect excluye de la
+# redirección) y los probes de path-traversal (que la regla custom de WAF
+# Hardening tira a block) nunca alcanzan el panel señuelo -> la pestaña
+# Honeypot no captura nada. Visto en producción 2026-09-11: 40 IPs honeypoteadas
+# generando 831 bloqueos WAF en 7 días. Se resuelve con una regla skip (producto
+# "waf") delante de la regla de hardening + un `and not ip.src in {...}` en esa
+# regla, para que el tráfico de una IP honeypoteada llegue entero al decoy.
+# ---------------------------------------------------------------------------
+HONEYPOT_WAF_SKIP_DESCRIPTION = "SIAM Active Defense - HONEYPOT skip WAF (managed ruleset)"
+HONEYPOT_TRAVERSAL_DESCRIPTION = "SIAM Active Defense - WAF Hardening (Path Traversal / archivos sensibles)"
+
+
+def _get_phase_entrypoint(settings: Settings, phase: str) -> list[dict]:
+    url = f"{CLOUDFLARE_API_BASE}/zones/{settings.CLOUDFLARE_ZONE_ID}/rulesets/phases/{phase}/entrypoint"
+    try:
+        resp = httpx.get(url, headers=_headers(settings), timeout=15)
+        data = resp.json()
+    except httpx.HTTPError as exc:
+        raise CloudflareFirewallError(f"Error de red leyendo la fase {phase}: {exc}") from exc
+    if not data.get("success"):
+        raise CloudflareFirewallError(f"Cloudflare rechazó la lectura de la fase {phase}: {data.get('errors') or data}")
+    return data.get("result", {}).get("rules", []) or []
+
+
+def _is_traversal_hardening_rule(rule: dict) -> bool:
+    description = rule.get("description") or ""
+    expression = rule.get("expression") or ""
+    return description == HONEYPOT_TRAVERSAL_DESCRIPTION or "wp-config" in expression
+
+
+def _strip_honeypot_ip_guard(expression: str) -> str:
+    """Quita un `and not ip.src in {...}` previamente anexado por
+    sync_honeypot_waf, para que volver a sincronizar con un set de IPs
+    distinto no acumule guards (idempotente, no importa el orden de llamadas)."""
+    marker = " and not ip.src in {"
+    return expression.split(marker)[0] if marker in expression else expression
+
+
+def sync_honeypot_waf(settings: Settings, ips: set[str]) -> None:
+    """Exime del WAF managed ruleset a las `ips` honeypoteadas.
+
+    Reemplaza la fase `http_request_firewall_custom` completa con la regla
+    skip + la regla de WAF Hardening existente (si la hay) ampliada con
+    `and not ip.src in {ips}` -- lee la fase antes para preservar cualquier
+    otra regla custom del usuario. `ips` vacío quita el skip y restaura la
+    regla de hardening original.
+    """
+    rules = _get_phase_entrypoint(settings, "http_request_firewall_custom")
+    new_rules = []
+    if ips:
+        new_rules.append({
+            "description": HONEYPOT_WAF_SKIP_DESCRIPTION,
+            # El skip se evalúa en firewall_custom, antes que el managed
+            # ruleset; el producto "waf" salta el WAF (OWASP) para estas IPs.
+            "expression": _ip_set_expression("ip.src", ips),
+            "action": "skip",
+            "action_parameters": {"products": ["waf"]},
+        })
+    for rule in rules:
+        if rule.get("description") == HONEYPOT_WAF_SKIP_DESCRIPTION:
+            continue  # se reconstruye arriba siempre con el set de IPs actual
+        if _is_traversal_hardening_rule(rule):
+            expression = _strip_honeypot_ip_guard(rule.get("expression", ""))
+            if ips:
+                expression = f"{expression} and not {_ip_set_expression('ip.src', ips)}"
+            rule["expression"] = expression
+        new_rules.append(rule)
+    _put_phase_entrypoint(settings, "http_request_firewall_custom", new_rules)
+
+
+# ---------------------------------------------------------------------------
 # RATE_LIMIT -- Workers KV, no Rulesets (ver docstring del módulo para por
 # qué). Igual que HONEYPOT: una única clave por cuenta con el conjunto
 # completo de IPs vigentes con acción RATE_LIMIT, se recalcula entera cada

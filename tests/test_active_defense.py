@@ -308,7 +308,11 @@ def test_respond_honeypot_uses_real_shared_redirect_rule_when_configured(client,
     import siem.response_actions as ad_response
 
     calls = []
+    waf_calls = []
     monkeypatch.setattr(ad_response, "sync_honeypot_rule", lambda settings, ips, target_url: calls.append((set(ips), target_url)))
+    # La exención del WAF managed se sincroniza con el mismo set de IPs --
+    # si no, el OWASP bloquea a la IP antes de que llegue al /admin del decoy.
+    monkeypatch.setattr(ad_response, "sync_honeypot_waf", lambda settings, ips: waf_calls.append(set(ips)))
     _enable_module_with_cloudflare()
     try:
         resp = client.post("/v1/active-defense/respond?ip=7.7.7.9&action=HONEYPOT&confirm=true")
@@ -319,6 +323,7 @@ def test_respond_honeypot_uses_real_shared_redirect_rule_when_configured(client,
         ips, target_url = calls[0]
         assert ips == {"7.7.7.9"}
         assert target_url.endswith("/admin")
+        assert waf_calls == [{"7.7.7.9"}]
     finally:
         _disable_module()
 
@@ -329,6 +334,7 @@ def test_unblocking_a_shared_rule_ip_resyncs_without_it(client, monkeypatch):
 
     calls = []
     monkeypatch.setattr(ad_response, "sync_honeypot_rule", lambda settings, ips, target_url: calls.append(set(ips)))
+    monkeypatch.setattr(ad_response, "sync_honeypot_waf", lambda settings, ips: None)
     _enable_module_with_cloudflare()
     try:
         client.post("/v1/active-defense/respond?ip=7.7.7.11&action=HONEYPOT&confirm=true")
@@ -389,6 +395,7 @@ def test_respond_twice_on_same_ip_replaces_ioc_instead_of_duplicating(client, mo
 
     honeypot_calls = []
     monkeypatch.setattr(ad_response, "sync_honeypot_rule", lambda settings, ips, target_url: honeypot_calls.append(set(ips)))
+    monkeypatch.setattr(ad_response, "sync_honeypot_waf", lambda settings, ips: None)
     monkeypatch.setattr(ad_response, "create_access_rule", lambda settings, ip, mode, notes: "cf-rule-789")
     _enable_module_with_cloudflare()
     try:
@@ -417,6 +424,7 @@ def test_respond_twice_with_same_action_does_not_revert_or_duplicate(client, mon
 
     honeypot_calls = []
     monkeypatch.setattr(ad_response, "sync_honeypot_rule", lambda settings, ips, target_url: honeypot_calls.append(set(ips)))
+    monkeypatch.setattr(ad_response, "sync_honeypot_waf", lambda settings, ips: None)
     _enable_module_with_cloudflare()
     try:
         client.post("/v1/active-defense/respond?ip=7.7.7.21&action=HONEYPOT&confirm=true")
