@@ -2236,6 +2236,14 @@ function ActiveDefensePanel() {
     return () => clearInterval(id);
   }, [eventLimit, attackerLimit, timelineLimit, dateFrom, dateTo]);
 
+  // Limpiar selección y estado de filas cuando cambian los filtros
+  // (p.ej. filtro de fechas → lista distinta → IPs seleccionadas ya no existen)
+  useEffect(() => {
+    setSelectedIps(new Set());
+    setRowAction({});
+    setExpanded(null);
+  }, [dateFrom, dateTo, attackerLimit]);
+
   async function responder(ip, action) {
     if (!window.confirm(`¿Ejecutar "${RESPONSE_ACTION_LABEL[action]}" sobre ${ip}? Esta acción queda registrada como IOC confirmado.`)) return;
     setResponding(ip);
@@ -2330,6 +2338,7 @@ function ActiveDefensePanel() {
         a.last_seen ? new Date(a.last_seen).toLocaleString('es-ES') : '',
       ];
     });
+    const dateSuffix = (dateFrom && dateTo) ? `_${dateFrom}_a_${dateTo}` : (dateFrom ? `_desde_${dateFrom}` : (dateTo ? `_hasta_${dateTo}` : ''));
     const csv = [headers, ...rows]
       .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))
       .join('\r\n');
@@ -2338,7 +2347,7 @@ function ActiveDefensePanel() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `atacantes_siam_${new Date().toISOString().slice(0, 10)}.csv`;
+    link.download = `atacantes_siam_${new Date().toISOString().slice(0, 10)}${dateSuffix}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -2349,6 +2358,7 @@ function ActiveDefensePanel() {
     const list = attackersForExport(attackers);
     if (list.length === 0) return;
     const generado = new Date().toLocaleString('es-ES');
+    const dateSuffix = (dateFrom && dateTo) ? ` del ${dateFrom} al ${dateTo}` : (dateFrom ? ` desde el ${dateFrom}` : (dateTo ? ` hasta el ${dateTo}` : ''));
     const filas = list.map(a => {
       const blocked = blockedByIp[a.ip];
       const accion = blocked ? (RESPONSE_ACTION_LABEL[blocked.action] || blocked.action) : 'Ninguna (solo sugerida)';
@@ -2375,7 +2385,7 @@ function ActiveDefensePanel() {
         @media print { body { padding: 0; } }
       </style></head><body>
       <h1>Informe de atacantes — SIAM Active Defense</h1>
-      <div class="sub">Generado el ${generado} · ${list.length} IP(s)</div>
+      <div class="sub">Generado el ${generado}${dateSuffix} · ${list.length} IP(s)</div>
       <table>
         <thead><tr><th>IP</th><th>País</th><th>Eventos</th><th>Severidad</th><th>Estado</th><th>Acción ejecutada</th><th>Última actividad</th></tr></thead>
         <tbody>${filas}</tbody>
