@@ -258,6 +258,30 @@ def test_apply_auto_responses_honeypots_repeat_offenders_when_enabled():
         db.close()
 
 
+def test_apply_auto_responses_runtime_override_beats_env_flag():
+    """El toggle del dashboard (RuntimeSettingDB, ver siem/store.py::
+    get_runtime_bool/set_runtime_bool) manda sobre PRAXIA_AUTO_HONEYPOT_
+    REPEAT_OFFENDERS de .env en los dos sentidos: lo enciende aunque el
+    .env lo tenga en False, y lo apaga aunque el .env lo tenga en True."""
+    from siem.attacker_aggregator import AUTO_HONEYPOT_SETTING_KEY
+
+    db = _Session()
+    try:
+        store = SiemStore(db)
+        _seed_repeat_offender(store, ip="8.8.8.8")
+
+        store.set_runtime_bool(AUTO_HONEYPOT_SETTING_KEY, True)
+        acted = apply_auto_responses(store, _settings(PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS=False))
+        assert acted == ["8.8.8.8"]
+
+        store.set_runtime_bool(AUTO_HONEYPOT_SETTING_KEY, False)
+        _seed_repeat_offender(store, ip="9.9.9.9")
+        acted = apply_auto_responses(store, _settings(PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS=True))
+        assert acted == []
+    finally:
+        db.close()
+
+
 def test_apply_auto_responses_skips_whitelisted_ips():
     from siem.models import WhitelistEntry
 

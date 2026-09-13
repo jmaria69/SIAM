@@ -45,6 +45,25 @@ def test_honeypot_attempt_creates_incident(client, db_session):
     assert len(incidents) == 1
 
 
+def test_honeypot_repeated_attempts_correlate_into_one_incident(client, db_session):
+    """Un atacante que prueba muchas credenciales no debe abrir un
+    incidente (y disparar un email) por cada intento -- correlate_event
+    agrupa por asset_id=ip (ver siem/router/honeypot.py::_log). Antes de
+    este fix, asset_id/asset_name quedaban vacíos y cada evento del señuelo
+    abría su propio incidente."""
+    from siem.db_models import IncidentDB
+
+    client.get("/admin")
+    for i in range(20):
+        client.post("/admin", data={"usuario": "admin", "password": f"try{i}"})
+
+    incidents = db_session.query(IncidentDB).all()
+    # La vista (ALTA) abre el incidente; el primer login (CRÍTICA) lo
+    # escala y reavisa una vez -- los otros 19 intentos, misma severidad,
+    # se suman sin abrir incidentes nuevos ni reenviar el email.
+    assert len(incidents) == 1
+
+
 def test_honeypot_beacon_logs_step_event(client, db_session):
     from siem.db_models import EventDB
 
@@ -144,3 +163,38 @@ def test_honeypot_session_detail(client):
     assert detail.json()["session"]["depth"] == 2  # config = nivel 2
 
     assert client.get("/v1/honeypot/sessions/no-existe").status_code == 404
+
+
+def test_honeypot_session_delete_requires_blocked_ip(client, db_session):
+    """Una sesión honeypot solo se puede borrar si su IP ya tiene un IOC
+    action=BLOCK -- mientras siga HONEYPOT es intel activa (ver
+    siem/router/honeypot.py::delete_sessions)."""
+    from siem.db_models import EventDB
+    from siem.models import IOC
+    from siem.store import SiemStore
+
+    client.get("/admin")
+    ip = db_session.query(EventDB).filter(EventDB.source == "honeypot").one().raw_payload["client_ip"]
+
+    listing = client.get("/v1/honeypot/sessions").json()
+    session = listing["sessions"][0]
+    assert session["blocked"] is False
+    session_id = session["session_id"]
+
+    # Sin IOC BLOCK: el borrado se salta la sesión, el evento sigue vivo.
+    resp = client.request("DELETE", "/v1/honeypot/sessions", json={"session_ids": [session_id]})
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": [], "skipped": [session_id]}
+    assert db_session.query(EventDB).filter(EventDB.source == "honeypot").count() == 1
+
+    # Con la IP bloqueada, el borrado sí procede.
+    store = SiemStore(db_session)
+    store.add_ioc(IOC(type="ip", value=ip, confidence="alta", action="BLOCK"))
+
+    listing = client.get("/v1/honeypot/sessions").json()
+    assert listing["sessions"][0]["blocked"] is True
+
+    resp = client.request("DELETE", "/v1/honeypot/sessions", json={"session_ids": [session_id]})
+    assert resp.status_code == 200
+    assert resp.json() == {"deleted": [session_id], "skipped": []}
+    assert db_session.query(EventDB).filter(EventDB.source == "honeypot").count() == 0

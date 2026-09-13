@@ -20,7 +20,7 @@ from siem.active_defense import (
     list_attackers,
     list_campaigns,
 )
-from siem.attacker_aggregator import apply_auto_responses
+from siem.attacker_aggregator import AUTO_HONEYPOT_SETTING_KEY, apply_auto_responses
 from siem.cloudflare_firewall import CloudflareFirewallError, create_access_rule, is_configured
 from siem.config import Settings, get_settings
 from siem.models import IOC, WhitelistEntry
@@ -266,3 +266,22 @@ def remove_from_whitelist(entry_id: str, store: SiemStore = Depends(get_store)) 
     if not store.remove_whitelist_entry(entry_id):
         raise HTTPException(status_code=404, detail="No encontrado")
     return {"eliminado": True}
+
+
+@router.get("/auto-honeypot", dependencies=[Depends(_require_enabled)])
+def get_auto_honeypot(store: SiemStore = Depends(get_store), settings: Settings = Depends(get_settings)) -> dict:
+    """Estado efectivo del auto-honeypot de reincidentes (siem/
+    attacker_aggregator.py::apply_auto_responses): el override del
+    dashboard si existe, si no el valor de .env
+    (PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS)."""
+    override = store.get_runtime_bool(AUTO_HONEYPOT_SETTING_KEY)
+    enabled = override if override is not None else settings.PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS
+    return {"enabled": enabled}
+
+
+@router.put("/auto-honeypot", dependencies=[Depends(_require_enabled)])
+def set_auto_honeypot(enabled: bool, store: SiemStore = Depends(get_store)) -> dict:
+    """Enciende/apaga el auto-honeypot de reincidentes sin tocar el .env --
+    el siguiente tick de apply_auto_responses lo respeta de inmediato."""
+    store.set_runtime_bool(AUTO_HONEYPOT_SETTING_KEY, enabled)
+    return {"enabled": enabled}

@@ -31,6 +31,7 @@ from siem.db_models import (
     IOCDB,
     IncidentDB,
     ReportDB,
+    RuntimeSettingDB,
     WhitelistDB,
 )
 from siem.models import (
@@ -362,6 +363,18 @@ class SiemStore:
         rows = query.order_by(EventDB.timestamp.asc(), EventDB.id.asc()).limit(limit).all()
         return [_row_to_event(r) for r in rows]
 
+    def delete_events_by_ids(self, event_ids: List[int]) -> int:
+        """Borra Event rows por id -- lo usa siem/router/honeypot.py::
+        delete_sessions para purgar el journey de una sesión honeypot ya
+        resuelta (IP con IOC action=BLOCK). A diferencia de delete_incident,
+        aquí sí se borran de verdad: son ruido acumulado de un atacante ya
+        contenido, no evidencia de un incidente todavía abierto."""
+        if not event_ids:
+            return 0
+        count = self.db.query(EventDB).filter(EventDB.id.in_(event_ids)).delete(synchronize_session=False)
+        self.db.commit()
+        return count
+
     # -- Perfiles de atacante (siem/attacker_aggregator.py) -------------------
     def aggregate_attacker_profiles(self, batch_size: int = 2000) -> int:
         """Procesa hasta `batch_size` eventos WAF nuevos (desde el cursor
@@ -528,6 +541,21 @@ class SiemStore:
         self.db.delete(row)
         self.db.commit()
         return True
+
+    # -- Runtime settings (overrides en caliente de flags de .env) ---------------
+    def get_runtime_bool(self, key: str) -> Optional[bool]:
+        """None = sin override -- el caller cae de vuelta al valor de .env."""
+        row = self.db.get(RuntimeSettingDB, key)
+        return row.value_bool if row else None
+
+    def set_runtime_bool(self, key: str, value: bool) -> None:
+        row = self.db.get(RuntimeSettingDB, key)
+        if row is None:
+            row = RuntimeSettingDB(key=key, value_bool=value)
+            self.db.add(row)
+        else:
+            row.value_bool = value
+        self.db.commit()
 
     # -- Automation rules --------------------------------------------------------
     def add_rule(self, rule: AutomationRule) -> AutomationRule:

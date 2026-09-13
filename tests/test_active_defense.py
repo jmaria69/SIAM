@@ -167,6 +167,25 @@ def test_whitelist_crud_and_respond_refuses_whitelisted_ip(client):
         _disable_module()
 
 
+def test_auto_honeypot_toggle_requires_module_and_persists(client):
+    # 403 sin el módulo contratado, igual que el resto de /active-defense.
+    assert client.get("/v1/active-defense/auto-honeypot").status_code == 403
+
+    _enable_module()
+    try:
+        # Por defecto sigue el .env (False en los tests, ver _enable_module).
+        assert client.get("/v1/active-defense/auto-honeypot").json() == {"enabled": False}
+
+        turned_on = client.put("/v1/active-defense/auto-honeypot?enabled=true")
+        assert turned_on.json() == {"enabled": True}
+        assert client.get("/v1/active-defense/auto-honeypot").json() == {"enabled": True}
+
+        turned_off = client.put("/v1/active-defense/auto-honeypot?enabled=false")
+        assert turned_off.json() == {"enabled": False}
+    finally:
+        _disable_module()
+
+
 def test_whitelisted_attacker_shows_lista_blanca_status(client):
     _enable_module()
     try:

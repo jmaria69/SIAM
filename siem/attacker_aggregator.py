@@ -36,6 +36,11 @@ logger = logging.getLogger("siem.attacker_aggregator")
 
 BATCH_SIZE = 2000
 
+# Clave de RuntimeSettingDB (siem/store.py::get_runtime_bool) para el
+# override en caliente de PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS -- ver
+# siem/router/active_defense.py::auto-honeypot, que es quien lo escribe.
+AUTO_HONEYPOT_SETTING_KEY = "auto_honeypot_repeat_offenders"
+
 # A partir de cuántos eventos WAF se intenta el enriquecimiento RDAP de una
 # IP -- deliberadamente el mismo umbral que "reincidente"
 # (PATTERN_REPEAT_OFFENDER_EVENTS): no tiene sentido gastar una consulta
@@ -73,7 +78,15 @@ def apply_auto_responses(store: SiemStore, settings: Settings) -> list[str]:
 
     acted: list[str] = []
 
-    if settings.PRAXIA_ACTIVE_DEFENSE_ENABLED and settings.PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS:
+    # Override en caliente desde el dashboard (Ajustes del panel Active
+    # Defense, ver siem/router/active_defense.py::auto-honeypot) -- si nadie
+    # lo ha tocado, get_runtime_bool devuelve None y se usa el valor de
+    # .env de siempre.
+    auto_honeypot = store.get_runtime_bool(AUTO_HONEYPOT_SETTING_KEY)
+    if auto_honeypot is None:
+        auto_honeypot = settings.PRAXIA_AUTO_HONEYPOT_REPEAT_OFFENDERS
+
+    if settings.PRAXIA_ACTIVE_DEFENSE_ENABLED and auto_honeypot:
         blocked_ips = {ioc.value for ioc in store.list_iocs() if ioc.type == "ip"}
         whitelisted_ips = {w.ip for w in store.list_whitelist()}
         for profile in store.list_repeat_offender_profiles(PATTERN_REPEAT_OFFENDER_EVENTS):

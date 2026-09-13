@@ -44,6 +44,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, Form, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 from siem.correlation import correlate_event
 from siem.honeypot_sessions import SESSION_EVENT_TYPES, build_sessions, session_stats
@@ -211,6 +212,15 @@ def _log(
     event = Event(
         source="honeypot",
         event_type=event_type,
+        # asset_id = IP atacante: sin esto, correlate_event (siem/
+        # correlation.py) no tiene con qué agrupar y cada evento del señuelo
+        # (vista, cada intento de login, cada beacon de paso) abría un
+        # incidente nuevo y disparaba un email -- un atacante que probara
+        # 123 credenciales generaba 123 incidentes y 123 correos. Con
+        # asset_id=ip, todos los eventos de la misma IP dentro de la ventana
+        # de correlación caen en el mismo incidente, y notificar_incidente
+        # solo reavisa si la severidad escala (ver correlate_event).
+        asset_id=ip,
         severity=severity,
         summary=f"{summary} desde {ip}",
         description="Interacción con el panel señuelo de Active Defense -- ninguna credencial es real.",
@@ -302,7 +312,19 @@ def sessions_payload(store: SiemStore, *, ip: str | None, date_from: str | None,
     if ip:
         events = [e for e in events if (e.raw_payload or {}).get("client_ip") == ip]
     sessions = build_sessions(events, limit=limit)
-    return {"sessions": [s for s in sessions], "stats": session_stats(sessions)}
+    # ioc_action expone el estado real de la IP (None/HONEYPOT/BLOCK/
+    # RATE_LIMIT) para que el panel ofrezca la acción siguiente (ver
+    # RESPONSE_ACTION_LABEL en soc_dashboard.html) sin tener que ir a la
+    # pestaña Active Defense. "blocked" gatea el borrado (delete_sessions
+    # más abajo): mientras la IP siga honeypoteada la sesión es intel
+    # activa, solo se puede purgar una vez el analista la bloquea de
+    # verdad (IOC action=BLOCK).
+    ip_actions = {ioc.value: ioc.action for ioc in store.list_iocs() if ioc.type == "ip"}
+    for session in sessions:
+        action = ip_actions.get(session.get("ip"))
+        session["ioc_action"] = action
+        session["blocked"] = action == "BLOCK"
+    return {"sessions": sessions, "stats": session_stats(sessions)}
 
 
 @router.get("/v1/honeypot/sessions")
@@ -335,3 +357,46 @@ def honeypot_session_detail(
         if session["session_id"] == session_id:
             return {"session": session}
     return JSONResponse({"detail": "Sesión no encontrada"}, status_code=404)
+
+
+class DeleteSessionsRequest(BaseModel):
+    session_ids: list[str]
+
+
+def delete_sessions(store: SiemStore, session_ids: list[str]) -> dict:
+    """Borra el journey completo de las sesiones indicadas -- solo si la IP
+    de origen ya tiene un IOC action=BLOCK.
+
+    Mientras una IP siga en HONEYPOT es el cebo activo con el que todavía se
+    está "entrenando" (recogiendo credenciales/TTPs); borrar su journey antes
+    de tiempo tira esa inteligencia. Una vez el analista decide bloquearla
+    del todo, la sesión ya cumplió su propósito y es solo ruido acumulado --
+    de ahí el filtro por `blocked` (ver sessions_payload) en vez de dejar
+    borrar cualquier sesión a demanda.
+    """
+    payload = sessions_payload(store, ip=None, date_from=None, date_to=None, limit=5000)
+    by_id = {s["session_id"]: s for s in payload["sessions"]}
+    deleted: list[str] = []
+    skipped: list[str] = []
+    for session_id in session_ids:
+        session = by_id.get(session_id)
+        if session is None:
+            continue
+        if not session["blocked"]:
+            skipped.append(session_id)
+            continue
+        store.delete_events_by_ids([e["id"] for e in session["events"]])
+        deleted.append(session_id)
+    return {"deleted": deleted, "skipped": skipped}
+
+
+@router.delete("/v1/honeypot/sessions")
+def delete_honeypot_sessions(
+    payload: DeleteSessionsRequest,
+    store: SiemStore = Depends(get_store),
+) -> dict:
+    """Borrado manual desde el panel del SOC (checkboxes en soc_dashboard.html).
+    Devuelve qué session_ids se borraron y cuáles se saltaron por no estar
+    bloqueadas -- el frontend ya filtra la selección, pero la API vuelve a
+    comprobarlo por si el estado cambió entre carga y click."""
+    return delete_sessions(store, payload.session_ids)

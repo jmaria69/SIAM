@@ -176,6 +176,19 @@ class AggregatorCursorDB(Base):
     last_event_id = Column(String, nullable=True)
 
 
+class RuntimeSettingDB(Base):
+    """Overrides en caliente de flags que por defecto viven en .env
+    (siem/config.py::Settings) -- una fila por `key`. Solo hace falta para
+    los que un analista debe poder cambiar desde el dashboard sin acceso al
+    servidor (hoy: auto_honeypot_repeat_offenders, ver
+    siem/router/active_defense.py). Ausencia de fila = sin override, se usa
+    el valor de .env; mismo criterio que AggregatorCursorDB para no acoplar
+    esto a memoria del proceso."""
+    __tablename__ = "runtime_settings"
+    key = Column(String, primary_key=True)
+    value_bool = Column(Boolean, nullable=True)
+
+
 class CampaignDB(Base):
     __tablename__ = "campaigns"
     id = Column(String, primary_key=True)
