@@ -29,6 +29,10 @@ videos/
 # node_modules frente a package-lock.json.
 agent/skills/
 
+# Sesión autenticada (cookies reales del panel admin) usada para capturas
+# de marketing -- nunca debe llegar a git.
+marketing/_session/
+
 # Herramientas locales de desarrollo (Claude Code, Serena, graphify): no son
 # fuente del proyecto ni deben compartirse en el repo público.
 .claude/

@@ -28,6 +28,7 @@ from siem.db_models import (
     AutomationRuleDB,
     CampaignDB,
     EventDB,
+    EvidenceDB,
     IOCDB,
     IncidentDB,
     ReportDB,
@@ -41,6 +42,7 @@ from siem.models import (
     CampaignStatus,
     CampaignTarget,
     Event,
+    Evidence,
     IOC,
     Incident,
     Report,
@@ -249,6 +251,15 @@ def _row_to_report(row: ReportDB) -> Report:
     return Report(
         id=row.id, type=row.type, period_start=row.period_start,
         period_end=row.period_end, generated_at=row.generated_at, content=row.content,
+    )
+
+
+def _row_to_evidence(row: EvidenceDB) -> Evidence:
+    return Evidence(
+        id=row.id, kind=row.kind, control_ids=row.control_ids or [], title=row.title,
+        summary=row.summary or "", payload=row.payload or {}, source_ref=row.source_ref,
+        actor=row.actor or "sistema", recorded_at=row.recorded_at,
+        seq=row.seq, prev_hash=row.prev_hash, hash=row.hash,
     )
 
 
@@ -579,6 +590,64 @@ class SiemStore:
     def list_reports(self) -> List[Report]:
         rows = self.db.query(ReportDB).order_by(ReportDB.generated_at.desc()).all()
         return [_row_to_report(r) for r in rows]
+
+    # -- Expediente de Defensa (ledger de evidencias, ver siem/evidence.py) ---------
+    def add_evidence(self, record: Evidence) -> Evidence:
+        """Inserta una evidencia YA encadenada. No calcula el hash a
+        propósito: ese es trabajo de siem/evidence.py::record, único camino
+        de escritura, para que no pueda entrar una fila sin encadenar por
+        llamar aquí directamente."""
+        row = EvidenceDB(
+            id=record.id, recorded_at=record.recorded_at, kind=record.kind.value,
+            control_ids=record.control_ids, title=record.title, summary=record.summary,
+            payload=record.payload, source_ref=record.source_ref, actor=record.actor,
+            prev_hash=record.prev_hash, hash=record.hash,
+        )
+        self.db.add(row)
+        self.db.commit()
+        record.seq = row.seq
+        return record
+
+    def last_evidence_hash(self) -> Optional[str]:
+        """Hash de la última evidencia de la cadena (None si está vacía, que
+        es el caso de la fila génesis)."""
+        row = self.db.query(EvidenceDB).order_by(EvidenceDB.seq.desc()).first()
+        return row.hash if row else None
+
+    def list_evidence(
+        self,
+        *,
+        kind: Optional[str] = None,
+        control_id: Optional[str] = None,
+        date_from: Optional[dt.datetime] = None,
+        date_to: Optional[dt.datetime] = None,
+        limit: Optional[int] = 500,
+    ) -> List[Evidence]:
+        """Siempre en orden ASC de `seq` -- es el orden de la cadena, y
+        verify_chain depende de él. `limit=None` devuelve el ledger completo
+        (lo necesita verify_chain: verificar solo los últimos N no diría nada
+        sobre una fila retocada más atrás).
+
+        `control_id` filtra en Python y no en SQL porque control_ids es una
+        columna JSON: SQLite no indexa dentro del JSON, así que un LIKE
+        sobre el texto serializado daría falsos positivos ("c1" casaría con
+        "c15"). Al volumen de una pyme (cientos de evidencias al año) el
+        filtro en memoria es irrelevante.
+        """
+        query = self.db.query(EvidenceDB)
+        if kind is not None:
+            query = query.filter(EvidenceDB.kind == kind)
+        if date_from is not None:
+            query = query.filter(EvidenceDB.recorded_at >= date_from)
+        if date_to is not None:
+            query = query.filter(EvidenceDB.recorded_at <= date_to)
+        query = query.order_by(EvidenceDB.seq.asc())
+        if limit is not None:
+            query = query.limit(limit)
+        records = [_row_to_evidence(r) for r in query.all()]
+        if control_id is not None:
+            records = [r for r in records if control_id in r.control_ids]
+        return records
 
     # -- Métricas por tiempo (módulo 1: "ataques en tiempo real, hora, día, mes, año") --
     def timeseries(self, granularity: str, limit: int = 30) -> List[dict]:

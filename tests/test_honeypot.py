@@ -8,14 +8,16 @@ def test_honeypot_page_loads_without_api_key(client):
     assert "usuario" in resp.text.lower()
 
 
-def test_honeypot_view_logs_high_severity_event(client, db_session):
+def test_honeypot_view_logs_low_severity_event(client, db_session):
     from siem.db_models import EventDB
 
     client.get("/admin")
 
     rows = db_session.query(EventDB).filter(EventDB.source == "honeypot").all()
     assert len(rows) == 1
-    assert rows[0].severity == "alta"
+    # LOW: una simple visita sin login ni interacción es ruido de escaneo de
+    # fondo, no intención real (ver siem/router/honeypot.py::honeypot_page).
+    assert rows[0].severity == "baja"
     # Vista: solo se rellena usuario_probado/password_probada en los intentos
     # de login, no en eventos de navegación (siem/router/honeypot.py::_log).
     assert "usuario_probado" not in rows[0].raw_payload
@@ -58,9 +60,10 @@ def test_honeypot_repeated_attempts_correlate_into_one_incident(client, db_sessi
         client.post("/admin", data={"usuario": "admin", "password": f"try{i}"})
 
     incidents = db_session.query(IncidentDB).all()
-    # La vista (ALTA) abre el incidente; el primer login (CRÍTICA) lo
-    # escala y reavisa una vez -- los otros 19 intentos, misma severidad,
-    # se suman sin abrir incidentes nuevos ni reenviar el email.
+    # La vista (BAJA) abre el incidente sin avisar (bajo el umbral de email);
+    # el primer login (CRÍTICA) lo escala y reavisa una vez -- los otros 19
+    # intentos, misma severidad, se suman sin abrir incidentes nuevos ni
+    # reenviar el email.
     assert len(incidents) == 1
 
 
@@ -163,6 +166,31 @@ def test_honeypot_session_detail(client):
     assert detail.json()["session"]["depth"] == 2  # config = nivel 2
 
     assert client.get("/v1/honeypot/sessions/no-existe").status_code == 404
+
+
+def test_honeypot_sessions_lists_pending_ips_assigned_but_not_yet_visited(client, db_session):
+    """Asignar HONEYPOT a una IP en Active Defense (Atacantes) configura la
+    redirección de Cloudflare para tráfico FUTURO -- no crea una sesión
+    retroactiva. pending_ips es como el panel Honeypot refleja esa
+    asignación de inmediato, antes de que el atacante vuelva a conectar."""
+    from siem.models import IOC
+    from siem.store import SiemStore
+
+    store = SiemStore(db_session)
+    store.add_ioc(IOC(type="ip", value="203.0.113.9", confidence="alta", action="HONEYPOT"))
+
+    resp = client.get("/v1/honeypot/sessions")
+    assert resp.status_code == 200
+    assert resp.json()["pending_ips"] == ["203.0.113.9"]
+    assert resp.json()["sessions"] == []
+
+    # En cuanto la IP visita de verdad el señuelo, deja de estar "pendiente"
+    # y pasa a ser una sesión normal.
+    client.get("/admin", headers={"CF-Connecting-IP": "203.0.113.9"})
+
+    resp = client.get("/v1/honeypot/sessions")
+    assert resp.json()["pending_ips"] == []
+    assert len(resp.json()["sessions"]) == 1
 
 
 def test_honeypot_session_delete_requires_blocked_ip(client, db_session):

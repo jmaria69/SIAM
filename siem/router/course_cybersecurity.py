@@ -4,7 +4,11 @@ Prefijo: /v1/pyme
 Expone los 5 bloques operativos del Plan Director de Seguridad.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+
+from siem import evidence
+from siem.models import Evidence, EvidenceKind
+from siem.store import SiemStore, get_store
 from siem.course_cybersecurity import (
     CourseCybersecurityEngine,
     PdsRequest,
@@ -37,9 +41,28 @@ async def pds_template():
 
 
 @router.post("/pds/generate", summary="Genera el Plan Director de Seguridad (PDS)")
-async def pds_generate(req: PdsRequest):
+async def pds_generate(req: PdsRequest, store: SiemStore = Depends(get_store)):
     """Genera un PDS completo con politicas por componente y ciclo PDCA."""
-    return CourseCybersecurityEngine.generate_pds(req)
+    resultado = CourseCybersecurityEngine.generate_pds(req)
+    # Expediente de Defensa: hasta aquí el PDS era una calculadora de un solo
+    # uso -- devolvía el plan y no quedaba rastro de que la pyme lo hubiera
+    # formalizado nunca. El ledger guarda el HECHO fechado (quién, cuándo,
+    # con qué alcance), no el documento entero: el PDF se regenera cuando
+    # haga falta, la fecha de formalización no.
+    evidence.record(store, Evidence(
+        kind=EvidenceKind.DOCUMENTO,
+        control_ids=["c1"],
+        title=f"Plan Director de Seguridad generado para {req.empresa_nombre}",
+        summary=resultado.get("alcance", ""),
+        payload={
+            "empresa": req.empresa_nombre,
+            "sector": req.sector,
+            "empleados": req.num_empleados,
+            "marcos_normativos": resultado.get("marcos_normativos", []),
+        },
+        actor="usuario",
+    ))
+    return resultado
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +133,26 @@ async def audit_checklist():
 
 
 @router.post("/audit/evaluate", summary="Evalua el nivel de madurez de ciberseguridad de la PYME")
-async def audit_evaluate(req: AuditEvaluationRequest):
+async def audit_evaluate(req: AuditEvaluationRequest, store: SiemStore = Depends(get_store)):
     """Calcula el porcentaje de cumplimiento y el nivel de madurez de seguridad de la organizacion."""
-    return CourseCybersecurityEngine.evaluate_audit(req.respuestas)
+    resultado = CourseCybersecurityEngine.evaluate_audit(req.respuestas)
+    # Los controles que la pyme DECLARA cumplir entran como control_ids: así
+    # el dossier puede contrastar lo declarado con lo probado por telemetría
+    # y marcar c4/c11 como "declarado" (no "probado") mientras no haya más.
+    # Es autoevaluación, no auditoría: el kind AUTOEVALUACION la mantiene
+    # fuera de OPERATIONAL_KINDS para que nunca cuente como prueba.
+    declarados = sorted(cid for cid, ok in req.respuestas.items() if ok)
+    evidence.record(store, Evidence(
+        kind=EvidenceKind.AUTOEVALUACION,
+        control_ids=declarados,
+        title=f"Autoevaluación de madurez: {resultado['porcentaje_cumplimiento']}% de cumplimiento",
+        summary=resultado["nivel_madurez"],
+        payload={
+            "cumplidos": resultado["cumplidos"],
+            "total_controles": resultado["total_controles"],
+            "porcentaje": resultado["porcentaje_cumplimiento"],
+            "puntos_mejora": resultado["puntos_mejora_prioritarios"],
+        },
+        actor="usuario",
+    ))
+    return resultado

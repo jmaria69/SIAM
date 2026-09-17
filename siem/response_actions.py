@@ -24,8 +24,9 @@ from siem.cloudflare_firewall import (
     sync_honeypot_waf,
     sync_rate_limit_rule,
 )
+from siem import evidence
 from siem.config import Settings
-from siem.models import IOC
+from siem.models import IOC, Evidence, EvidenceKind
 from siem.router.honeypot import HONEYPOT_PATH
 from siem.store import SiemStore
 
@@ -133,16 +134,36 @@ def apply_response_action(
 
     # Queda registrado como IOC en cualquier caso (real o simulado): así el
     # dashboard de Threat Intel se puebla con atacantes confirmados y
-    # overview() pinta el estado "bloqueada" de verdad. Si la IP ya tenía un
-    # IOC, se sustituye en vez de acumular una entrada por acción -- si la
-    # acción anterior dejó algo activo en Cloudflare y la nueva es distinta,
-    # se deshace primero.
-    existing = next((ioc for ioc in store.list_iocs() if ioc.type == "ip" and ioc.value == ip), None)
-    if existing is not None:
+    # overview() pinta el estado "bloqueada" de verdad. Si la IP ya tenía
+    # IOC(s), se sustituyen en vez de acumular una entrada por acción -- si
+    # la acción anterior dejó algo activo en Cloudflare y la nueva es
+    # distinta, se deshace primero. Se borran TODAS las coincidencias (no
+    # solo la primera): filas duplicadas de antes de este dedup dejaban
+    # entradas "fantasma" con la acción vieja, que ganaban el `.find()`/dict
+    # del frontend y pintaban el estado equivocado (p.ej. "bloqueada" para
+    # una IP recién puesta en HONEYPOT).
+    existing_all = [ioc for ioc in store.list_iocs() if ioc.type == "ip" and ioc.value == ip]
+    for existing in existing_all:
         if existing.action != action:
             revert_ioc(existing, store, settings)
         store.remove_ioc(existing.id)
     store.add_ioc(IOC(type="ip", value=ip, confidence=confidence, campaign=campaign, cf_rule_id=cf_rule_id, action=action))
+
+    # Expediente de Defensa (siem/evidence.py). El IOC de arriba dice que la
+    # IP ESTÁ bloqueada ahora; esto deja constancia fechada de que se
+    # bloqueó, que es lo que pide un auditor o el cuestionario de una
+    # aseguradora meses después -- el IOC se borra al desbloquear, la
+    # evidencia no. `real` entra en el payload a propósito: una acción
+    # simulada (sin credenciales de Cloudflare) no es prueba de nada y el
+    # expediente no debe dejar que se presente como tal.
+    evidence.record(store, Evidence(
+        kind=EvidenceKind.RESPUESTA_ACTIVA,
+        control_ids=["s3", "c9"] if action == "HONEYPOT" else ["s1", "c9"],
+        title=f"Respuesta activa '{action}' sobre {ip}",
+        summary=resultado,
+        payload={"ip": ip, "accion": action, "real": real, "confianza": confidence, "cf_rule_id": cf_rule_id},
+        source_ref=ip,
+    ))
 
     return {
         "ejecutado": True,

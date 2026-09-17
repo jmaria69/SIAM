@@ -62,9 +62,31 @@ def compute_threat_score(events: list[Event]) -> int:
     return min(100, sum(SEVERITY_WEIGHT.get(e.severity, 5) for e in events))
 
 
+# Estado visible en el dashboard según la acción de IOC aplicada -- BLOCK
+# sigue siendo "bloqueada" (compatibilidad con lo ya guardado/probado), las
+# demás acciones tenían su propio IOC pero antes colapsaban todas en
+# "bloqueada" porque _blocked_ips() solo miraba si existía ALGÚN IOC para la
+# IP, sin mirar action -- por eso Active Defense pintaba "Bloqueada" para una
+# IP en HONEYPOT/RATE_LIMIT/CHALLENGE.
+ACTION_STATUS = {"BLOCK": "bloqueada", "HONEYPOT": "honeypot", "RATE_LIMIT": "limitada", "CHALLENGE": "desafio"}
+
+
+def _status_for(ip: str, blocked_ips, whitelisted_ips: set[str]) -> str:
+    if ip in whitelisted_ips:
+        return "lista_blanca"
+    if ip in blocked_ips:
+        # blocked_ips puede ser un dict {ip: action} (router, con la acción
+        # real de verdad) o un set plano (llamadas directas/tests, sin
+        # acción disponible) -- en ese caso "bloqueada" sigue siendo el
+        # valor por defecto de siempre.
+        action = blocked_ips.get(ip) if isinstance(blocked_ips, dict) else None
+        return ACTION_STATUS.get(action, "bloqueada")
+    return "activa"
+
+
 def list_attackers(
     events: list[Event],
-    blocked_ips: set[str] | None = None,
+    blocked_ips: set[str] | dict[str, str] | None = None,
     whitelisted_ips: set[str] | None = None,
 ) -> list[dict]:
     """Agrupa eventos WAF por IP de origen.
@@ -73,7 +95,7 @@ def list_attackers(
     store.list_iocs() (bloqueos confirmados vía /respond) y
     store.list_whitelist() -- así el dashboard puede pintar si un atacante
     está realmente bloqueado en vez de solo "sugerido"."""
-    blocked_ips = blocked_ips or set()
+    blocked_ips = blocked_ips or {}
     whitelisted_ips = whitelisted_ips or set()
 
     by_ip: dict[str, list[Event]] = defaultdict(list)
@@ -93,12 +115,7 @@ def list_attackers(
             e.raw_payload.get("attack_category") for e in evs if e.raw_payload.get("attack_category")
         })
 
-        if ip in whitelisted_ips:
-            status = "lista_blanca"
-        elif ip in blocked_ips:
-            status = "bloqueada"
-        else:
-            status = "activa"
+        status = _status_for(ip, blocked_ips, whitelisted_ips)
 
         attackers.append({
             "ip": ip,
@@ -151,23 +168,18 @@ def pattern_flags(profile: dict) -> list[str]:
 
 
 def attacker_from_profile(
-    profile: dict, blocked_ips: set[str] | None = None, whitelisted_ips: set[str] | None = None,
+    profile: dict, blocked_ips: set[str] | dict[str, str] | None = None, whitelisted_ips: set[str] | None = None,
 ) -> dict:
     """Da forma de "atacante" (misma forma que list_attackers()) a una fila
     de AttackerProfileDB ya convertida a dict -- ver siem/store.py::
     list_attacker_profiles. No relee eventos crudos: todo lo que necesita ya
     vive reducido en el perfil (severity_counts, attack_categories,
     active_days, threat_score)."""
-    blocked_ips = blocked_ips or set()
+    blocked_ips = blocked_ips or {}
     whitelisted_ips = whitelisted_ips or set()
     ip = profile["ip"]
 
-    if ip in whitelisted_ips:
-        status = "lista_blanca"
-    elif ip in blocked_ips:
-        status = "bloqueada"
-    else:
-        status = "activa"
+    status = _status_for(ip, blocked_ips, whitelisted_ips)
 
     max_sev = Severity(profile.get("max_severity") or Severity.INFO.value)
 

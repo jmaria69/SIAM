@@ -189,6 +189,48 @@ class RuntimeSettingDB(Base):
     value_bool = Column(Boolean, nullable=True)
 
 
+class EvidenceDB(Base):
+    """Expediente de Defensa: registro append-only de hechos probatorios,
+    encadenado por hash (ver siem/evidence.py).
+
+    Por qué existe: SIAM ya GENERABA toda la evidencia que pide un auditor
+    NIS2 o el cuestionario de una aseguradora (bloqueos reales, sesiones de
+    señuelo, simulacros de phishing, incidentes contenidos, PDS/BIA
+    generados) y la tiraba a la basura -- los módulos PYME son calculadoras
+    de un solo uso y los informes se construyen al vuelo. Sin un registro
+    fechado no se puede DEMOSTRAR nada a posteriori, que es exactamente
+    donde una pyme suspende el cuestionario.
+
+    `prev_hash`/`hash` encadenan cada fila con la anterior: retocar una fila
+    vieja para "mejorar" el expediente rompe la cadena a partir de ahí y
+    GET /v1/evidence/verify lo delata. Es evidencia a prueba de
+    manipulación, no criptografía fuerte -- quien controle el servidor puede
+    recalcular la cadena entera; lo que se impide es el retoque silencioso
+    de una fila suelta.
+
+    `seq` (autoincrement) da el orden de la cadena pero NO entra en el hash:
+    lo asigna SQLite en el INSERT y tendría que conocerse antes de calcular
+    el hash. El enlace real lo da prev_hash, que ya fija el orden de forma
+    unívoca.
+    """
+    __tablename__ = "evidence_ledger"
+    seq = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String, unique=True, index=True)  # EVD-xxxxxxxx
+    recorded_at = Column(DateTime, default=dt.datetime.utcnow, index=True)
+    kind = Column(String, index=True)  # ver siem/models.py::EvidenceKind
+    # Controles del checklist de auditoría (siem/course_cybersecurity.py::
+    # get_audit_checklist, ids c1..c15) + los propios de SIAM (s1..s3, ver
+    # siem/evidence.py::CONTROLS) que esta evidencia respalda.
+    control_ids = Column(JSON, default=list)
+    title = Column(String)
+    summary = Column(String)
+    payload = Column(JSON, default=dict)  # detalle estructurado del hecho
+    source_ref = Column(String, nullable=True)  # INC-xxx, CAMP-xxx, una IP...
+    actor = Column(String, default="sistema")  # "sistema", "IA", usuario
+    prev_hash = Column(String, nullable=True)  # NULL solo en la fila génesis
+    hash = Column(String, index=True)
+
+
 class CampaignDB(Base):
     __tablename__ = "campaigns"
     id = Column(String, primary_key=True)

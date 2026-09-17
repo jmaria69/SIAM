@@ -193,6 +193,63 @@ class Report(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Expediente de Defensa (ver siem/evidence.py y db_models.EvidenceDB)
+# ---------------------------------------------------------------------------
+class EvidenceKind(str, Enum):
+    """Qué tipo de hecho probatorio es. La distinción importante para un
+    cuestionario de ciberseguro no es el tema, es si la evidencia es
+    OPERATIVA (telemetría real del sistema: el WAF bloqueó, el señuelo
+    capturó, el incidente se contuvo) o DOCUMENTAL (la pyme generó/declaró
+    un documento). Responder "sí" a una pregunta respaldándose en un
+    documento cuando la aseguradora esperaba prueba operativa es lo que
+    acaba en rescisión de póliza -- ver siem/evidence.py::CONTROLS."""
+    RESPUESTA_ACTIVA = "respuesta_activa"        # operativa: BLOCK/HONEYPOT/... ejecutado
+    INCIDENTE_CONTENIDO = "incidente_contenido"  # operativa: incidente pasado a resuelto
+    SENUELO = "senuelo"                          # operativa: interacción con el honeypot
+    FORMACION = "formacion"                      # operativa: campaña/simulacro con resultados
+    DOCUMENTO = "documento"                      # documental: PDS, BIA, DRP generados
+    AUTOEVALUACION = "autoevaluacion"            # documental: checklist de auditoría
+    MANUAL = "manual"                            # documental: evidencia externa aportada a mano
+
+
+OPERATIONAL_KINDS = frozenset({
+    EvidenceKind.RESPUESTA_ACTIVA,
+    EvidenceKind.INCIDENTE_CONTENIDO,
+    EvidenceKind.SENUELO,
+    EvidenceKind.FORMACION,
+})
+
+
+class Evidence(BaseModel):
+    id: str = Field(default_factory=lambda: f"EVD-{uuid.uuid4().hex[:8]}")
+    kind: EvidenceKind
+    control_ids: List[str] = Field(default_factory=list)
+    title: str
+    summary: str = ""
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    source_ref: Optional[str] = None
+    actor: str = "sistema"
+    recorded_at: datetime = Field(default_factory=datetime.utcnow)
+    # Rellenados por siem/evidence.py::record al encadenar -- nunca por el
+    # caller. `seq` lo asigna SQLite en el INSERT (None hasta entonces).
+    seq: Optional[int] = None
+    prev_hash: Optional[str] = None
+    hash: Optional[str] = None
+
+
+class EvidenceCreate(BaseModel):
+    """Evidencia externa aportada a mano por el cliente (captura de la
+    consola de M365 con el MFA activado, informe de restauración de backup
+    del proveedor...). Entra al mismo ledger encadenado, pero marcada como
+    documental y con el usuario como `actor`."""
+    control_ids: List[str] = Field(default_factory=list)
+    title: str
+    summary: str = ""
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    actor: str = "usuario"
+
+
+# ---------------------------------------------------------------------------
 # Chat de IA
 # ---------------------------------------------------------------------------
 class ChatMessage(BaseModel):

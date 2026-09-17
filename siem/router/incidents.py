@@ -5,10 +5,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from siem import evidence
 from siem.ai import get_ai_provider
 from siem.config import Settings, get_settings
 from siem.killchain import build_kill_chain
-from siem.models import Incident, IncidentStatus, TimelineEntry
+from siem.models import Evidence, EvidenceKind, Incident, IncidentStatus, TimelineEntry
 from siem.store import SiemStore, get_store
 
 router = APIRouter(prefix="/v1/incidents", tags=["incidentes"])
@@ -55,6 +56,29 @@ def update_incident(
         if update.status == IncidentStatus.RESUELTO:
             if incident.status != IncidentStatus.RESUELTO:
                 incident.resolved_at = datetime.utcnow()
+                # Expediente de Defensa: solo en la transición real a
+                # resuelto, nunca al re-marcar uno ya resuelto -- si no, el
+                # ledger acumularía evidencias duplicadas del mismo hecho y
+                # el tiempo de contención del dossier dejaría de ser creíble.
+                horas = round((incident.resolved_at - incident.created_at).total_seconds() / 3600, 1)
+                evidence.record(store, Evidence(
+                    kind=EvidenceKind.INCIDENTE_CONTENIDO,
+                    control_ids=["s2"],
+                    title=f"Incidente contenido: {incident.title}",
+                    summary=(
+                        f"Severidad {incident.severity.value}, contenido en {horas} h "
+                        f"desde su detección. {len(incident.timeline)} actuación(es) registradas."
+                    ),
+                    payload={
+                        "incidente": incident.id,
+                        "severidad": incident.severity.value,
+                        "horas_contencion": horas,
+                        "activos_afectados": incident.affected_assets,
+                        "eventos": len(incident.event_ids),
+                    },
+                    source_ref=incident.id,
+                    actor="usuario",
+                ))
         else:
             incident.resolved_at = None
         incident.status = update.status

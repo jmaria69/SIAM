@@ -148,6 +148,48 @@ def test_confirmed_block_marks_attacker_as_bloqueada_in_overview(client):
         _disable_module()
 
 
+def test_confirmed_honeypot_marks_attacker_as_honeypot_not_bloqueada_in_overview(client):
+    """Antes, _blocked_ips() solo miraba si existía un IOC para la IP (sin
+    mirar action) -- así, cualquier acción (HONEYPOT/RATE_LIMIT/CHALLENGE)
+    pintaba "bloqueada" en el estado, igual que BLOCK."""
+    _enable_module()
+    try:
+        client.post("/v1/ingest/waf", json={"events": [
+            {"source": "waf-cloudflare", "action": "block", "attack_category": "sqli",
+             "client_ip": "7.7.7.7", "country": "US"},
+        ]})
+        client.post("/v1/active-defense/respond?ip=7.7.7.7&action=HONEYPOT&confirm=true")
+
+        overview = client.get("/v1/active-defense/overview").json()
+        attacker = next(a for a in overview["attackers"] if a["ip"] == "7.7.7.7")
+        assert attacker["status"] == "honeypot"
+    finally:
+        _disable_module()
+
+
+def test_respond_replaces_all_duplicate_iocs_for_same_ip(client, db_session):
+    """apply_response_action deduplicaba solo el PRIMER IOC encontrado para
+    la IP (next(...)) -- si ya había más de una fila duplicada (de antes de
+    este dedup), se quedaban filas fantasma con la acción vieja que ganaban
+    en según qué lookup del frontend/backend."""
+    from siem.models import IOC
+    from siem.store import SiemStore
+
+    _enable_module()
+    try:
+        store = SiemStore(db_session)
+        store.add_ioc(IOC(type="ip", value="6.6.6.6", confidence="alta", action="BLOCK"))
+        store.add_ioc(IOC(type="ip", value="6.6.6.6", confidence="alta", action="BLOCK"))
+
+        client.post("/v1/active-defense/respond?ip=6.6.6.6&action=HONEYPOT&confirm=true")
+
+        remaining = [ioc for ioc in store.list_iocs() if ioc.value == "6.6.6.6"]
+        assert len(remaining) == 1
+        assert remaining[0].action == "HONEYPOT"
+    finally:
+        _disable_module()
+
+
 def test_whitelist_crud_and_respond_refuses_whitelisted_ip(client):
     _enable_module()
     try:

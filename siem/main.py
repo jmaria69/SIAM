@@ -25,6 +25,7 @@ from siem.router.reports import router as reports_router
 from siem.router.threats import router as threats_router
 from siem.router.waf import router as waf_router
 from siem.router.course_cybersecurity import router as pyme_router
+from siem.router.evidence import router as evidence_router
 from siem.router.demo import router as demo_router
 from siem.router.honeypot import router as honeypot_router
 from siem.router.auth import router as auth_router
@@ -315,6 +316,7 @@ def create_app(settings_: Settings | None = None) -> FastAPI:
     app.include_router(waf_router)  # /v1/ingest/waf (WAAP hibrido: Cloudflare + Coraza)
     app.include_router(active_defense_router)  # /v1/active-defense/* (módulo premium, ver active_defense.py)
     app.include_router(pyme_router)  # /v1/pyme/* (Ciberseguridad PYME)
+    app.include_router(evidence_router)  # /v1/evidence/* (Expediente de Defensa, ver siem/evidence.py)
     app.include_router(demo_router)  # /demo, /demo/request (fuera de /v1/, público a propósito)
     app.include_router(honeypot_router)  # /admin -- panel señuelo de Active Defense (fuera de /v1/, público a propósito)
     app.include_router(auth_router)

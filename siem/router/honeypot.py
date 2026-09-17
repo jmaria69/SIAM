@@ -249,7 +249,12 @@ def honeypot_page(request: Request, response: Response, store: SiemStore = Depen
             SESSION_COOKIE, sid,
             max_age=7 * 24 * 3600, samesite="lax",
         )
-    _log(request, store, severity=Severity.HIGH, summary="Visita al panel señuelo", session_id=sid)
+    # LOW, no HIGH: pedir la página una vez y no volver es el patrón de
+    # cualquier escáner automático de fondo (Shodan y similares) que prueba
+    # /admin en medio internet -- no implica intención real. Escalamos a
+    # MEDIUM en cuanto explora un paso del señuelo y a CRITICAL en cuanto
+    # prueba una credencial (ver más abajo), que sí son señal de intención.
+    _log(request, store, severity=Severity.LOW, summary="Visita al panel señuelo", session_id=sid)
     return _page()
 
 
@@ -324,7 +329,17 @@ def sessions_payload(store: SiemStore, *, ip: str | None, date_from: str | None,
         action = ip_actions.get(session.get("ip"))
         session["ioc_action"] = action
         session["blocked"] = action == "BLOCK"
-    return {"sessions": sessions, "stats": session_stats(sessions)}
+    # IPs puestas en HONEYPOT desde Active Defense (Atacantes) que TODAVÍA no
+    # visitaron el señuelo -- la regla de Cloudflare ya las redirige, pero
+    # hasta que no repitan tráfico no generan un Event(source="honeypot") y
+    # por tanto no aparecen como sesión. Sin esto, el analista asigna
+    # HONEYPOT en Atacantes y no ve ningún cambio en este panel hasta que el
+    # atacante vuelva a conectar, lo que parece que la acción no hizo nada.
+    session_ips = {s.get("ip") for s in sessions}
+    pending_ips = sorted(ip for ip, action in ip_actions.items() if action == "HONEYPOT" and ip not in session_ips)
+    if ip:
+        pending_ips = [p for p in pending_ips if p == ip]
+    return {"sessions": sessions, "stats": session_stats(sessions), "pending_ips": pending_ips}
 
 
 @router.get("/v1/honeypot/sessions")

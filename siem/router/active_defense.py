@@ -45,10 +45,16 @@ def status(settings: Settings = Depends(get_settings)) -> dict:
     return {"enabled": settings.PRAXIA_ACTIVE_DEFENSE_ENABLED}
 
 
-def _blocked_ips(store: SiemStore) -> set[str]:
+def _blocked_ips(store: SiemStore) -> dict[str, str]:
     # La blacklist reutiliza IOC(type="ip") -- ver /respond, que registra ahí
-    # cada bloqueo confirmado. No hace falta una tabla nueva para esto.
-    return {ioc.value for ioc in store.list_iocs() if ioc.type == "ip"}
+    # cada bloqueo confirmado. Mapea ip -> action (BLOCK/HONEYPOT/RATE_LIMIT/
+    # CHALLENGE) para que list_attackers()/attacker_from_profile() pinten el
+    # estado real en vez de colapsar todo en "bloqueada" (ver
+    # siem/active_defense.py::ACTION_STATUS). Si hubiera IOCs duplicados
+    # para la misma IP (no debería, apply_response_action los deduplica),
+    # gana el último en iterar -- mismo criterio que siem/router/
+    # honeypot.py::sessions_payload.
+    return {ioc.value: ioc.action for ioc in store.list_iocs() if ioc.type == "ip"}
 
 
 def _whitelisted_ips(store: SiemStore) -> set[str]:
@@ -77,20 +83,20 @@ def _parse_date_range(date_from: Optional[str], date_to: Optional[str]) -> tuple
 
 @router.get("/overview", dependencies=[Depends(_require_enabled)])
 def overview(
-    event_limit: int = Query(10, ge=10, le=100),
-    attacker_limit: int = Query(10, ge=10, le=100),
-    timeline_limit: int = Query(10, ge=10, le=100),
+    event_limit: int = Query(10, ge=10, le=200),
+    attacker_limit: int = Query(10, ge=10, le=200),
+    timeline_limit: int = Query(10, ge=10, le=200),
     date_from: Optional[str] = Query(None, description="YYYY-MM-DD, filtra live_attacks/timeline/threat_score/attackers"),
     date_to: Optional[str] = Query(None, description="YYYY-MM-DD, inclusive"),
     store: SiemStore = Depends(get_store),
     settings: Settings = Depends(get_settings),
 ) -> dict:
-    if event_limit not in (10, 50, 100):
-        raise HTTPException(status_code=422, detail="event_limit debe ser 10, 50 o 100")
-    if attacker_limit not in (10, 30, 100):
-        raise HTTPException(status_code=422, detail="attacker_limit debe ser 10, 30 o 100")
-    if timeline_limit not in (10, 50, 100):
-        raise HTTPException(status_code=422, detail="timeline_limit debe ser 10, 50 o 100")
+    if event_limit not in (10, 50, 100, 200):
+        raise HTTPException(status_code=422, detail="event_limit debe ser 10, 50, 100 o 200")
+    if attacker_limit not in (10, 30, 100, 200):
+        raise HTTPException(status_code=422, detail="attacker_limit debe ser 10, 30, 100 o 200")
+    if timeline_limit not in (10, 50, 100, 200):
+        raise HTTPException(status_code=422, detail="timeline_limit debe ser 10, 50, 100 o 200")
     parsed_from, parsed_to = _parse_date_range(date_from, date_to)
     # date_from/date_to acotan los eventos crudos (live_attacks/timeline/
     # threat_score). Sin rango, "attackers" usa el rollup acumulado de
@@ -231,7 +237,7 @@ def add_to_blacklist(
         except CloudflareFirewallError as exc:
             raise HTTPException(status_code=502, detail=f"No se pudo bloquear en Cloudflare: {exc}")
 
-    return store.add_ioc(IOC(type="ip", value=entry.ip, confidence="alta", campaign=entry.reason, cf_rule_id=cf_rule_id))
+    return store.add_ioc(IOC(type="ip", value=entry.ip, confidence="alta", campaign=entry.reason, cf_rule_id=cf_rule_id, action="BLOCK"))
 
 
 @router.delete("/blacklist/{ioc_id}", dependencies=[Depends(_require_enabled)])
